@@ -66,8 +66,10 @@ The script is **idempotent** — re-running overwrites the secrets with the same
 ### 3.3 — `GH_PAT` required scopes
 
 The `GH_PAT` is consumed by:
+
 1. The Custom Script Extension on each VMSS instance (`Initialize-GhRunner.ps1`) to register the runner against the target GitHub org
 2. The `terraform-deploy.yml` workflow (release-lookup steps that resolve latest VMSS image versions)
+3. The ScaleIn janitor on the function app (`GITHUB_RECONCILE_TOKEN`) — queries workflow-run state to detect stuck VMs
 
 Required scopes for a fine-grained PAT:
 
@@ -79,7 +81,9 @@ Required scopes for a fine-grained PAT:
 | **Metadata: Read** | Repository | API base-level access |
 | **Contents: Read** | Repository | Release-lookup queries |
 
-> **Why `Actions: R/W` on all runner-target repos:** the ScaleIn janitor queries `actions/runs/<id>` on every repo it might attribute a stuck VM to. Without `actions:read` on a given repo, the janitor returns 404 and conservatively defers — leaving stuck VMs uncleared. See [memory `project_pat_identity_mapping.md`](../../.claude/CLAUDE.md) for the design history of this scope decision.
+> **Don't have a PAT with these scopes yet?** See the step-by-step UI walkthrough in **[Scenarios/Create-GhPat.md](../Scenarios/Create-GhPat.md)** — covers exactly which fields to fill on `https://github.com/settings/personal-access-tokens/new`, with screenshots of the permission selectors.
+
+> **Why `Actions: R/W` on all runner-target repos:** the ScaleIn janitor queries `actions/runs/<id>` on every repo it might attribute a stuck VM to. Without `actions:read` on a given repo, the janitor returns 404 and conservatively defers — leaving stuck VMs uncleared.
 
 ### 3.4 — Optional secrets reference
 

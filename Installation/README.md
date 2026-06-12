@@ -16,6 +16,7 @@ You should be done in **20–40 minutes** if you have the right permissions in h
 | Just running an `apply` for ongoing operations | Skip Installation. Dispatch [`terraform-deploy.yml`](../.github/workflows/terraform-deploy.yml) from the Actions tab |
 | Switching the GitHub auth strategy from PAT to GitHub App (or v.v.) | See **[Appendix A — GitHub App auth](AppendixA-GitHubAppAuth.md)** |
 | Stuck on a step | See **[Appendix B — Troubleshooting](AppendixB-Troubleshooting.md)** |
+| Doing one specific operation (create a PAT, rotate the SP, switch subs, etc.) | See **[Scenarios/](../Scenarios/README.md)** — independent how-tos for individual operations |
 
 ---
 

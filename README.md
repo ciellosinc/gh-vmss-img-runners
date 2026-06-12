@@ -38,6 +38,7 @@ The install is 5 steps:
 
 | Reference | What's in it |
 |---|---|
+| [`Scenarios/`](Scenarios/README.md) | Self-contained how-to guides for individual operations (create a PAT, rotate the SP, switch subs, customize backend names, etc.). Inspired by [AL-Go's Scenarios folder](https://github.com/microsoft/AL-Go/tree/main/Scenarios). |
 | [`terraform/README.md`](terraform/README.md) | Terraform module structure, environments, variables, what each module owns |
 | [`Scripts/README.md`](Scripts/README.md) | Operational PowerShell scripts (webhook wiring, sub migrations, etc.) |
 
