@@ -108,7 +108,10 @@ param(
 
     [Parameter()] [SecureString] $GhSecretsPat,
     [Parameter()] [SecureString] $GhImageBuilderPat,
-    [Parameter()] [string] $GhOrganization
+    [Parameter()] [string] $GhOrganization,
+
+    [Parameter()] [string] $TfStateResourceGroupName = 'rg-terraform-state',
+    [Parameter()] [string] $TfStateContainerName = 'tfstate'
 )
 
 Set-StrictMode -Version Latest
@@ -286,6 +289,15 @@ Write-Action -Verb 'VMSS_ADMIN_PASSWORD' -Object 'set' -Outcome 'Set'
 Set-GhRepoVariable -Name 'TFSTATE_STORAGE_ACCOUNT' -Value $StorageAccountName -Repo $repoSlug
 Write-Action -Verb 'TFSTATE_STORAGE_ACCOUNT' -Object "$StorageAccountName (variable, not secret)" -Outcome 'Set'
 
+# TFSTATE_RESOURCE_GROUP_NAME (repo variable) — replaces the hardcoded 'rg-terraform-state'
+# in backend.tf so operators can pick their own naming convention without touching code
+Set-GhRepoVariable -Name 'TFSTATE_RESOURCE_GROUP_NAME' -Value $TfStateResourceGroupName -Repo $repoSlug
+Write-Action -Verb 'TFSTATE_RESOURCE_GROUP_NAME' -Object "$TfStateResourceGroupName (variable, not secret)" -Outcome 'Set'
+
+# TFSTATE_CONTAINER_NAME (repo variable) — same parameterization as above for the container
+Set-GhRepoVariable -Name 'TFSTATE_CONTAINER_NAME' -Value $TfStateContainerName -Repo $repoSlug
+Write-Action -Verb 'TFSTATE_CONTAINER_NAME' -Object "$TfStateContainerName (variable, not secret)" -Outcome 'Set'
+
 #endregion
 
 #region Optional secrets
@@ -322,7 +334,9 @@ Write-Host ''
 Write-Host 'What was set on this repo:' -ForegroundColor Cyan
 Write-Host ('  Repo:        {0}' -f $repoSlug) -ForegroundColor White
 Write-Host ('  Mandatory:   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, GH_PAT, VMSS_ADMIN_PASSWORD') -ForegroundColor White
-Write-Host ('  Variable:    TFSTATE_STORAGE_ACCOUNT = {0}' -f $StorageAccountName) -ForegroundColor White
+Write-Host ('  Variables:   TFSTATE_STORAGE_ACCOUNT    = {0}' -f $StorageAccountName) -ForegroundColor White
+Write-Host ('               TFSTATE_RESOURCE_GROUP_NAME = {0}' -f $TfStateResourceGroupName) -ForegroundColor White
+Write-Host ('               TFSTATE_CONTAINER_NAME      = {0}' -f $TfStateContainerName) -ForegroundColor White
 Write-Host ('  Optional:    GH_SECRETS_PAT, GH_IMAGE_BUILDER_PAT (set if provided), GH_ORGANIZATION') -ForegroundColor White
 
 Write-Host ''

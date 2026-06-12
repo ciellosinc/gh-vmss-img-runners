@@ -269,12 +269,31 @@ foreach ($s in $optionalSecrets) {
 }
 
 $existingVars = gh variable list --repo $repoSlug --json name,value 2>$null | ConvertFrom-Json
+
 $tfstateVar = $existingVars | Where-Object { $_.name -eq 'TFSTATE_STORAGE_ACCOUNT' }
 if ($tfstateVar) {
     $valueMatches = ($tfstateVar.value -eq $StorageAccountName)
     Add-Check -Area 'GitHub' -What 'Variable: TFSTATE_STORAGE_ACCOUNT' -Passed $valueMatches -Detail (Format-Detail $valueMatches "matches '$StorageAccountName'" "value '$($tfstateVar.value)' != expected '$StorageAccountName'")
 } else {
     Add-Check -Area 'GitHub' -What 'Variable: TFSTATE_STORAGE_ACCOUNT' -Passed $false -Detail 'MISSING — re-run Set-GitHubSecrets.ps1'
+}
+
+# TFSTATE_RESOURCE_GROUP_NAME variable — backs the parameterized resource_group_name in backend.tf
+$rgVar = $existingVars | Where-Object { $_.name -eq 'TFSTATE_RESOURCE_GROUP_NAME' }
+if ($rgVar) {
+    $rgMatches = ($rgVar.value -eq $ResourceGroupName)
+    Add-Check -Area 'GitHub' -What 'Variable: TFSTATE_RESOURCE_GROUP_NAME' -Passed $rgMatches -Detail (Format-Detail $rgMatches "matches '$ResourceGroupName'" "value '$($rgVar.value)' != expected '$ResourceGroupName'")
+} else {
+    Add-Check -Area 'GitHub' -What 'Variable: TFSTATE_RESOURCE_GROUP_NAME' -Passed $false -Detail 'MISSING — re-run Set-GitHubSecrets.ps1 (introduced in Phase B-fix #5)'
+}
+
+# TFSTATE_CONTAINER_NAME variable — backs the parameterized container_name in backend.tf
+$containerVar = $existingVars | Where-Object { $_.name -eq 'TFSTATE_CONTAINER_NAME' }
+if ($containerVar) {
+    $containerMatches = ($containerVar.value -eq $ContainerName)
+    Add-Check -Area 'GitHub' -What 'Variable: TFSTATE_CONTAINER_NAME' -Passed $containerMatches -Detail (Format-Detail $containerMatches "matches '$ContainerName'" "value '$($containerVar.value)' != expected '$ContainerName'")
+} else {
+    Add-Check -Area 'GitHub' -What 'Variable: TFSTATE_CONTAINER_NAME' -Passed $false -Detail 'MISSING — re-run Set-GitHubSecrets.ps1 (introduced in Phase B-fix #5)'
 }
 
 #endregion

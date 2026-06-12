@@ -95,11 +95,30 @@ Required scopes for a fine-grained PAT:
 
 Skip these if you don't have the consumer-repo wiring set up — TF will gracefully skip those modules.
 
-### 3.5 — Repo variable
+### 3.5 — Repo variables (3)
 
-`TFSTATE_STORAGE_ACCOUNT` is a **variable**, not a secret (its value is plaintext in workflow logs). It's the storage account name from Step 2 and is consumed by `terraform init -backend-config="storage_account_name=$TFSTATE_STORAGE_ACCOUNT"`.
+Three GitHub repo **variables** (not secrets — plaintext in workflow logs) parameterize the Terraform backend so operators can pick custom names without editing `backend.tf`:
 
-> **Why variable instead of secret:** workflow log readability + the value isn't sensitive (storage accounts aren't secret; the AAD-only access policy keeps them safe even when the name is public).
+| Variable | Default | What it backs |
+|---|---|---|
+| `TFSTATE_STORAGE_ACCOUNT` | (no default — required) | `backend "azurerm" { storage_account_name = ... }` — from Step 2 |
+| `TFSTATE_RESOURCE_GROUP_NAME` | `rg-terraform-state` | `backend "azurerm" { resource_group_name = ... }` — from Step 2 (your choice in the portal form) |
+| `TFSTATE_CONTAINER_NAME` | `tfstate` | `backend "azurerm" { container_name = ... }` — from Step 2 (default usually fine) |
+
+The workflows read all three via `-backend-config="<key>=${{ vars.<NAME> }}"` flags on `terraform init`. If a variable is unset, the workflow falls back to the default (so existing installs on `rg-terraform-state` / `tfstate` keep working without action).
+
+If you used non-default names in Step 2 (e.g. `rg-ghvmss-tf-state` instead of `rg-terraform-state`), pass them to `Set-GitHubSecrets.ps1` via:
+
+```pwsh
+./Set-GitHubSecrets.ps1 `
+    -GitHubOrg '<your-org>' -GitHubRepo '<your-repo>' `
+    -SubscriptionId '<sub>' -StorageAccountName '<sa>' `
+    -TfStateResourceGroupName 'rg-ghvmss-tf-state' `       # ← your custom name
+    -TfStateContainerName 'tfstate' `                       # ← default if you kept it
+    -InputPath '..\.bootstrap-output.json'
+```
+
+> **Why variables instead of secrets:** workflow log readability + the values aren't sensitive (storage account / RG / container names aren't secret; the AAD-only access policy keeps them safe even when the names are public).
 
 ---
 

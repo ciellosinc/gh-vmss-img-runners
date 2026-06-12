@@ -206,9 +206,9 @@ jobs:
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           terraform init \
-            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP_NAME || 'rg-terraform-state' }}" \
             -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
-            -backend-config="container_name=tfstate" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER_NAME || 'tfstate' }}" \
             -backend-config="key=ghrunners/${{ needs.setup.outputs.environment }}/terraform.tfstate" \
             -backend-config="use_azuread_auth=true"
 
@@ -325,9 +325,9 @@ jobs:
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           terraform init \
-            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP_NAME || 'rg-terraform-state' }}" \
             -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
-            -backend-config="container_name=tfstate" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER_NAME || 'tfstate' }}" \
             -backend-config="key=ghrunners/${{ needs.setup.outputs.environment }}/terraform.tfstate" \
             -backend-config="use_azuread_auth=true"
 
@@ -441,9 +441,9 @@ jobs:
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           terraform init \
-            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP_NAME || 'rg-terraform-state' }}" \
             -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
-            -backend-config="container_name=tfstate" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER_NAME || 'tfstate' }}" \
             -backend-config="key=ghrunners/${{ needs.setup.outputs.environment }}/terraform.tfstate" \
             -backend-config="use_azuread_auth=true"
 
