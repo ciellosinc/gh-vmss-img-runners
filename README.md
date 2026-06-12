@@ -58,4 +58,4 @@ GitHub webhook → ScaleOut Function App → `VMSS.update --capacity +1` → new
 
 ## Note for forkers
 
-The Deploy-to-Azure badge above points at the canonical `gitspacecadet/gh-vmss-img-runners` raw URLs. If you fork this repo to your own org, update the badge URL in this file to point at your fork — otherwise the button deploys *our* template, not yours. Find/replace `gitspacecadet/gh-vmss-img-runners` → `<your-org>/<your-fork-name>` and bump the branch name if you're working on something other than `main`.
+The Deploy-to-Azure badge above points at the canonical `ciellosinc/gh-vmss-img-runners` raw URLs. If you fork this repo to your own org, update the badge URL in this file to point at your fork — otherwise the button deploys *our* template, not yours. Find/replace `ciellosinc/gh-vmss-img-runners` → `<your-org>/<your-fork-name>` and bump the branch name if you're working on something other than `main`.
