@@ -48,6 +48,13 @@
       "metadata": {
         "description": "Object ID (NOT Client ID) of the OIDC service principal created in Step 1 by Bootstrap-Entra.ps1. Will receive 'Storage Blob Data Contributor' on the storage account."
       }
+    },
+    "createdAt": {
+      "type": "string",
+      "defaultValue": "[utcNow('yyyy-MM-dd')]",
+      "metadata": {
+        "description": "Auto-populated UTC deployment date for the resource group tag. Do not override unless you know what you're doing — utcNow() is only valid as a parameter default, so this can't be inlined into the resource tag."
+      }
     }
   },
   "variables": {
@@ -62,7 +69,7 @@
       "tags": {
         "purpose": "terraform-state-backend",
         "managedBy": "gh-vmss-img-runners/Installation/prereqs",
-        "createdAt": "[utcNow('yyyy-MM-dd')]"
+        "createdAt": "[parameters('createdAt')]"
       }
     },
     {
