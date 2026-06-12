@@ -287,7 +287,8 @@ $passed = @($script:Results | Where-Object { $_.Passed }).Count
 $failed = @($script:Results | Where-Object { -not $_.Passed }).Count
 $total  = $script:Results.Count
 
-Write-Host ("  Passed: {0} / {1}" -f $passed, $total) -ForegroundColor (if ($failed -eq 0) { 'Green' } else { 'Yellow' })
+$summaryColor = if ($failed -eq 0) { 'Green' } else { 'Yellow' }
+Write-Host ("  Passed: {0} / {1}" -f $passed, $total) -ForegroundColor $summaryColor
 if ($failed -gt 0) {
     Write-Host "  Failed: $failed" -ForegroundColor Red
     Write-Host ''
