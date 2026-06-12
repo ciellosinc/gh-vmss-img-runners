@@ -74,6 +74,24 @@ $ErrorActionPreference = 'Stop'
 
 $script:Results = New-Object System.Collections.Generic.List[object]
 
+function Format-Detail {
+    <#
+    .SYNOPSIS
+        Returns one of two strings based on a condition.
+    .DESCRIPTION
+        Used to build [Add-Check] detail messages without inlining `(if ... else ...)` in
+        parameter expressions — that pattern is PS 7+ only and brittle even there
+        (parser sometimes treats the inner `if` as a cmdlet name, failing with
+        'The term if is not recognized as a name of a cmdlet').
+    #>
+    param(
+        [Parameter(Mandatory)] [bool] $Condition,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $TrueText,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $FalseText
+    )
+    if ($Condition) { return $TrueText } else { return $FalseText }
+}
+
 function Add-Check {
     param(
         [string] $Area,
@@ -168,14 +186,14 @@ if ($sp) {
             --assignee $spObjectId `
             --role $role --scope $subScope `
             --query '[0].id' -o tsv 2>$null
-        Add-Check -Area 'Entra' -What "Role: $role" -Passed ([bool]$hasRole) -Detail (if ($hasRole) { 'assigned at sub scope' } else { 'MISSING — re-run Bootstrap-Entra.ps1' })
+        Add-Check -Area 'Entra' -What "Role: $role" -Passed ([bool]$hasRole) -Detail (Format-Detail ([bool]$hasRole) 'assigned at sub scope' 'MISSING — re-run Bootstrap-Entra.ps1')
     }
 
     $fics = az ad app federated-credential list --id $appObjectId -o json | ConvertFrom-Json
     foreach ($env in $Environments) {
         $expectedSubject = "repo:$GitHubOrg/$GitHubRepo`:environment:$env"
         $hasFic = [bool] ($fics | Where-Object { $_.subject -eq $expectedSubject })
-        Add-Check -Area 'Entra' -What "FIC: env=$env" -Passed $hasFic -Detail (if ($hasFic) { $expectedSubject } else { "MISSING subject '$expectedSubject'" })
+        Add-Check -Area 'Entra' -What "FIC: env=$env" -Passed $hasFic -Detail (Format-Detail $hasFic $expectedSubject "MISSING subject '$expectedSubject'")
     }
 } else {
     Add-Check -Area 'Entra' -What 'SP exists' -Passed $false -Detail "SP '$SpName' not found. Re-run Bootstrap-Entra.ps1."
@@ -185,7 +203,7 @@ if ($sp) {
 foreach ($env in $Environments) {
     $envCheck = gh api "repos/$repoSlug/environments/$env" --jq '.name' 2>$null
     $exists = ($LASTEXITCODE -eq 0 -and [bool]$envCheck)
-    Add-Check -Area 'GitHub' -What "Env: $env" -Passed $exists -Detail (if ($exists) { 'exists' } else { 'MISSING — re-run Bootstrap-Entra.ps1' })
+    Add-Check -Area 'GitHub' -What "Env: $env" -Passed $exists -Detail (Format-Detail $exists 'exists' 'MISSING — re-run Bootstrap-Entra.ps1')
 }
 
 #endregion
@@ -195,11 +213,11 @@ foreach ($env in $Environments) {
 Write-SectionHeader 'Azure prereqs (Step 2)'
 
 $rg = az group show --name $ResourceGroupName 2>$null | ConvertFrom-Json
-Add-Check -Area 'Azure' -What 'Resource group' -Passed ([bool]$rg) -Detail (if ($rg) { "$ResourceGroupName in $($rg.location)" } else { "MISSING $ResourceGroupName — re-run ARM deploy" })
+Add-Check -Area 'Azure' -What 'Resource group' -Passed ([bool]$rg) -Detail (Format-Detail ([bool]$rg) "$ResourceGroupName in $($rg.location)" "MISSING $ResourceGroupName — re-run ARM deploy")
 
 if ($rg) {
     $sa = az storage account show --name $StorageAccountName --resource-group $ResourceGroupName 2>$null | ConvertFrom-Json
-    Add-Check -Area 'Azure' -What 'Storage account' -Passed ([bool]$sa) -Detail (if ($sa) { "$StorageAccountName" } else { "MISSING $StorageAccountName" })
+    Add-Check -Area 'Azure' -What 'Storage account' -Passed ([bool]$sa) -Detail (Format-Detail ([bool]$sa) "$StorageAccountName" "MISSING $StorageAccountName")
 
     if ($sa) {
         # Container check — use AAD auth via az CLI
@@ -207,7 +225,7 @@ if ($rg) {
             --account-name $StorageAccountName `
             --name $ContainerName `
             --auth-mode login 2>$null | ConvertFrom-Json
-        Add-Check -Area 'Azure' -What 'Blob container' -Passed ([bool]$container) -Detail (if ($container) { $ContainerName } else { "MISSING $ContainerName container" })
+        Add-Check -Area 'Azure' -What 'Blob container' -Passed ([bool]$container) -Detail (Format-Detail ([bool]$container) $ContainerName "MISSING $ContainerName container")
 
         # RBAC: SP has Storage Blob Data Contributor on the SA
         if ($sp) {
@@ -217,7 +235,7 @@ if ($rg) {
                 --role 'Storage Blob Data Contributor' `
                 --scope $sa.id `
                 --query '[0].id' -o tsv 2>$null
-            Add-Check -Area 'Azure' -What 'RBAC: SP has Blob Data Contributor' -Passed ([bool]$hasBlobRole) -Detail (if ($hasBlobRole) { 'on storage account' } else { 'MISSING — re-run ARM deploy or assign manually' })
+            Add-Check -Area 'Azure' -What 'RBAC: SP has Blob Data Contributor' -Passed ([bool]$hasBlobRole) -Detail (Format-Detail ([bool]$hasBlobRole) 'on storage account' 'MISSING — re-run ARM deploy or assign manually')
         }
     }
 }
@@ -237,7 +255,7 @@ $existingSecretNames = @($existingSecrets | ForEach-Object { $_.name })
 
 foreach ($s in $mandatorySecrets) {
     $present = $existingSecretNames -contains $s
-    Add-Check -Area 'GitHub' -What "Secret: $s" -Passed $present -Detail (if ($present) { 'set (value not readable)' } else { 'MISSING — re-run Set-GitHubSecrets.ps1' })
+    Add-Check -Area 'GitHub' -What "Secret: $s" -Passed $present -Detail (Format-Detail $present 'set (value not readable)' 'MISSING — re-run Set-GitHubSecrets.ps1')
 }
 
 foreach ($s in $optionalSecrets) {
@@ -254,7 +272,7 @@ $existingVars = gh variable list --repo $repoSlug --json name,value 2>$null | Co
 $tfstateVar = $existingVars | Where-Object { $_.name -eq 'TFSTATE_STORAGE_ACCOUNT' }
 if ($tfstateVar) {
     $valueMatches = ($tfstateVar.value -eq $StorageAccountName)
-    Add-Check -Area 'GitHub' -What 'Variable: TFSTATE_STORAGE_ACCOUNT' -Passed $valueMatches -Detail (if ($valueMatches) { "matches '$StorageAccountName'" } else { "value '$($tfstateVar.value)' != expected '$StorageAccountName'" })
+    Add-Check -Area 'GitHub' -What 'Variable: TFSTATE_STORAGE_ACCOUNT' -Passed $valueMatches -Detail (Format-Detail $valueMatches "matches '$StorageAccountName'" "value '$($tfstateVar.value)' != expected '$StorageAccountName'")
 } else {
     Add-Check -Area 'GitHub' -What 'Variable: TFSTATE_STORAGE_ACCOUNT' -Passed $false -Detail 'MISSING — re-run Set-GitHubSecrets.ps1'
 }
