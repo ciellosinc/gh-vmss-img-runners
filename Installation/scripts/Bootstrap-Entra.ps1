@@ -111,6 +111,45 @@ function Test-CommandPresence {
     [bool] (Get-Command -Name $Name -ErrorAction SilentlyContinue)
 }
 
+function Invoke-AzCall {
+    <#
+    .SYNOPSIS
+        Wraps an az CLI invocation with $LASTEXITCODE checking + separate stdout/stderr capture.
+    .DESCRIPTION
+        Without this, az writes errors to stderr but $LASTEXITCODE is the only reliable success
+        signal. Pipe operators like '| Out-Null' suppress stdout but NOT stderr, so failures look
+        like "scary message printed, then we continued anyway".
+
+        This helper redirects stderr to a temp file so we can:
+          - Return CLEAN stdout from the scriptblock (no stderr pollution into our $existingX checks)
+          - On failure (LASTEXITCODE != 0), read the stderr content and surface it in the thrown error
+          - Detect the well-known Status_InteractionRequired pattern and append a remediation hint
+    .EXAMPLE
+        Invoke-AzCall { az group list --query '[0].id' -o tsv }
+    #>
+    param(
+        [Parameter(Mandatory)] [scriptblock] $Script,
+        [Parameter()] [string] $ContextHint
+    )
+    $errorFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $output = & $Script 2>$errorFile
+        if ($LASTEXITCODE -ne 0) {
+            $stderr = Get-Content $errorFile -Raw -ErrorAction SilentlyContinue
+            $message = "az command failed (exit $LASTEXITCODE)"
+            if ($ContextHint) { $message += " during $ContextHint" }
+            if ($stderr) { $message += ":`n$stderr" }
+            if ($stderr -and ($stderr -match 'Status_InteractionRequired|InteractionRequired')) {
+                $message += "`n`nHINT: your cached az token lacks an ARM-scoped grant. Run:`n  az login --scope https://management.core.windows.net//.default`nthen re-run this script (idempotent — already-created resources are skipped)."
+            }
+            throw $message
+        }
+        return $output
+    } finally {
+        Remove-Item $errorFile -ErrorAction SilentlyContinue
+    }
+}
+
 #endregion
 
 #region Pre-flight
@@ -136,6 +175,18 @@ if ($azAccount.id -ne $SubscriptionId) {
 }
 Write-Action -Verb 'az signed in' -Object "$($azAccount.user.name) -> $($azAccount.name)" -Outcome 'Info'
 $tenantId = $azAccount.tenantId
+
+# ARM token probe — catches Status_InteractionRequired BEFORE we start writing.
+# A fresh `az login` sometimes leaves the cached token without the management.core scope
+# granted; later role assignment writes fail with a confusing 'Status_InteractionRequired'
+# error. Probing a benign ARM read upfront converts that into a clean abort with a clear
+# remediation message (see Invoke-AzCall helper).
+try {
+    Invoke-AzCall -ContextHint 'ARM probe' -Script { az group list --query '[0].id' -o tsv } | Out-Null
+    Write-Action -Verb 'ARM reachable' -Object 'OK' -Outcome 'Info'
+} catch {
+    throw $_
+}
 
 # gh auth
 gh auth status 2>&1 | Out-Null
@@ -188,22 +239,26 @@ $subScope = "/subscriptions/$SubscriptionId"
 $requiredRoles = @('Contributor', 'User Access Administrator')
 
 foreach ($role in $requiredRoles) {
-    $existingAssignment = az role assignment list `
-        --assignee-object-id $spObjectId `
-        --assignee-principal-type ServicePrincipal `
-        --role $role `
-        --scope $subScope `
-        --query '[0].id' -o tsv 2>$null
+    $existingAssignment = Invoke-AzCall -ContextHint "role assignment list ($role)" -Script {
+        az role assignment list `
+            --assignee-object-id $spObjectId `
+            --assignee-principal-type ServicePrincipal `
+            --role $role `
+            --scope $subScope `
+            --query '[0].id' -o tsv
+    }
 
     if ($existingAssignment) {
         Write-Action -Verb 'Role' -Object $role -Outcome 'Exists'
     } else {
         if ($PSCmdlet.ShouldProcess("$role on $subScope", "Assign role to SP $SpName")) {
-            az role assignment create `
-                --assignee-object-id $spObjectId `
-                --assignee-principal-type ServicePrincipal `
-                --role $role `
-                --scope $subScope | Out-Null
+            Invoke-AzCall -ContextHint "role assignment create ($role)" -Script {
+                az role assignment create `
+                    --assignee-object-id $spObjectId `
+                    --assignee-principal-type ServicePrincipal `
+                    --role $role `
+                    --scope $subScope
+            } | Out-Null
             Write-Action -Verb 'Role' -Object $role -Outcome 'Created'
         }
     }
@@ -248,15 +303,28 @@ foreach ($env in $Environments) {
         Write-Action -Verb 'FIC' -Object "$ficName ($subject)" -Outcome 'Exists'
     } else {
         if ($PSCmdlet.ShouldProcess($subject, 'Create federated identity credential')) {
+            # PowerShell + az CLI + inline JSON string for --parameters is broken: PS strips
+            # the double-quotes when passing the string as a command-line arg, az then sees
+            # bare-key JSON ({audiences:[...]}) and fails with "Failed to parse string as JSON".
+            # The robust fix is to write the JSON to a temp file and use --parameters @<file>.
+            # See https://github.com/Azure/azure-cli/blob/dev/doc/quoting-issues-with-powershell.md
             $ficSpec = @{
                 name      = $ficName
                 issuer    = 'https://token.actions.githubusercontent.com'
                 subject   = $subject
                 audiences = @('api://AzureADTokenExchange')
                 description = "OIDC for $GitHubOrg/$GitHubRepo on env $env"
-            } | ConvertTo-Json -Compress
-            az ad app federated-credential create --id $appObjectId --parameters $ficSpec | Out-Null
-            Write-Action -Verb 'FIC' -Object "$ficName ($subject)" -Outcome 'Created'
+            }
+            $tempFile = New-TemporaryFile
+            try {
+                $ficSpec | ConvertTo-Json -Compress | Out-File -FilePath $tempFile.FullName -Encoding utf8 -NoNewline
+                Invoke-AzCall -ContextHint "federated-credential create ($ficName)" -Script {
+                    az ad app federated-credential create --id $appObjectId --parameters "@$($tempFile.FullName)"
+                } | Out-Null
+                Write-Action -Verb 'FIC' -Object "$ficName ($subject)" -Outcome 'Created'
+            } finally {
+                Remove-Item $tempFile.FullName -ErrorAction SilentlyContinue
+            }
         }
     }
 }
