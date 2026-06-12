@@ -88,7 +88,7 @@ You can also just re-run `Bootstrap-Entra.ps1` with a different `-SpName` to cre
 # SP exists with the right role assignments
 az ad sp list --filter "displayName eq 'GitHub-OIDC-GHRunners-<your-org>'" --query '[0].id' -o tsv
 az role assignment list \
-  --assignee-object-id <SP-Object-Id> \
+  --assignee <SP-Object-Id> \
   --scope /subscriptions/<your-sub-id> \
   --query '[].roleDefinitionName' -o tsv
 # Expected: Contributor + User Access Administrator

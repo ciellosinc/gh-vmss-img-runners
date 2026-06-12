@@ -101,7 +101,7 @@ az storage container show --account-name '<your-unique-name>' --name tfstate --a
 
 # SP has Blob Data Contributor on the SA
 az role assignment list \
-  --assignee-object-id '<sp-object-id-from-step-1>' \
+  --assignee '<sp-object-id-from-step-1>' \
   --scope $(az storage account show -n '<your-unique-name>' --query id -o tsv) \
   --query '[].roleDefinitionName' -o tsv
 # Expected: Storage Blob Data Contributor

@@ -163,9 +163,9 @@ if ($sp) {
 
     $subScope = "/subscriptions/$SubscriptionId"
     foreach ($role in @('Contributor', 'User Access Administrator')) {
+        # Universal --assignee syntax for cross-version az CLI compatibility (Phase B fix)
         $hasRole = az role assignment list `
-            --assignee-object-id $spObjectId `
-            --assignee-principal-type ServicePrincipal `
+            --assignee $spObjectId `
             --role $role --scope $subScope `
             --query '[0].id' -o tsv 2>$null
         Add-Check -Area 'Entra' -What "Role: $role" -Passed ([bool]$hasRole) -Detail (if ($hasRole) { 'assigned at sub scope' } else { 'MISSING — re-run Bootstrap-Entra.ps1' })
@@ -211,9 +211,9 @@ if ($rg) {
 
         # RBAC: SP has Storage Blob Data Contributor on the SA
         if ($sp) {
+            # Universal --assignee syntax for cross-version az CLI compatibility (Phase B fix)
             $hasBlobRole = az role assignment list `
-                --assignee-object-id $sp.id `
-                --assignee-principal-type ServicePrincipal `
+                --assignee $sp.id `
                 --role 'Storage Blob Data Contributor' `
                 --scope $sa.id `
                 --query '[0].id' -o tsv 2>$null

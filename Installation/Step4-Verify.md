@@ -116,7 +116,7 @@ Exits **1**. Don't proceed to Step 5 until this is zero.
 | `FIC: env=<x>` FAIL | Environment didn't exist when FIC was created | Re-run `Bootstrap-Entra.ps1` (idempotent — will fill the gap) |
 | `Resource group` FAIL | Step 2 ARM deploy never ran or failed | Re-run the Deploy-to-Azure button (or `az deployment sub create`) |
 | `Storage account` FAIL | Wrong name parameter | Check the ARM deployment Outputs; pass the correct `-StorageAccountName` |
-| `RBAC: Blob Data Contributor` FAIL | SP Object ID was wrong when ARM deployed | Re-run ARM with the correct `spObjectId`, OR assign manually: `az role assignment create --assignee-object-id <sp> --role 'Storage Blob Data Contributor' --scope <sa-resource-id>` |
+| `RBAC: Blob Data Contributor` FAIL | SP Object ID was wrong when ARM deployed | Re-run ARM with the correct `spObjectId`, OR assign manually: `az role assignment create --assignee <sp> --role 'Storage Blob Data Contributor' --scope <sa-resource-id>` |
 | `Secret: <name>` FAIL | Step 3 script didn't include this secret | Re-run `Set-GitHubSecrets.ps1` with appropriate params |
 | `Variable: TFSTATE_STORAGE_ACCOUNT` "mismatch" | You changed storage account names between Step 2 and Step 3 | Re-run `Set-GitHubSecrets.ps1 -StorageAccountName <correct-value>` |
 

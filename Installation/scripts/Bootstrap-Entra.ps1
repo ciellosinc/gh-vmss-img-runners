@@ -239,10 +239,13 @@ $subScope = "/subscriptions/$SubscriptionId"
 $requiredRoles = @('Contributor', 'User Access Administrator')
 
 foreach ($role in $requiredRoles) {
+    # Use the universal --assignee syntax (works on every az CLI version).
+    # The modern --assignee-object-id + --assignee-principal-type variant requires az 2.32+
+    # which surfaced as 'unrecognized arguments' on older operator boxes during Phase B.
+    # Trade-off: --assignee triggers a Graph lookup for principal type detection (negligible).
     $existingAssignment = Invoke-AzCall -ContextHint "role assignment list ($role)" -Script {
         az role assignment list `
-            --assignee-object-id $spObjectId `
-            --assignee-principal-type ServicePrincipal `
+            --assignee $spObjectId `
             --role $role `
             --scope $subScope `
             --query '[0].id' -o tsv
@@ -254,8 +257,7 @@ foreach ($role in $requiredRoles) {
         if ($PSCmdlet.ShouldProcess("$role on $subScope", "Assign role to SP $SpName")) {
             Invoke-AzCall -ContextHint "role assignment create ($role)" -Script {
                 az role assignment create `
-                    --assignee-object-id $spObjectId `
-                    --assignee-principal-type ServicePrincipal `
+                    --assignee $spObjectId `
                     --role $role `
                     --scope $subScope
             } | Out-Null
