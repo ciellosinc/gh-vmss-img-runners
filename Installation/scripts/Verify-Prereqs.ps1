@@ -63,6 +63,8 @@ param(
     [Parameter()] [string] $ResourceGroupName = 'rg-terraform-state',
     [Parameter()] [string] $StorageAccountName,
     [Parameter()] [string] $ContainerName = 'tfstate',
+    [Parameter()] [string] $RuntimeLocation = 'centralus',
+    [Parameter()] [string] $RuntimeRegionSuffix = 'cus',
     [Parameter()] [string[]] $Environments = @('dev', 'test', 'prod', 'dev-plan', 'test-plan', 'prod-plan'),
     [Parameter()] [string] $InputPath
 )
@@ -294,6 +296,24 @@ if ($containerVar) {
     Add-Check -Area 'GitHub' -What 'Variable: TFSTATE_CONTAINER_NAME' -Passed $containerMatches -Detail (Format-Detail $containerMatches "matches '$ContainerName'" "value '$($containerVar.value)' != expected '$ContainerName'")
 } else {
     Add-Check -Area 'GitHub' -What 'Variable: TFSTATE_CONTAINER_NAME' -Passed $false -Detail 'MISSING — re-run Set-GitHubSecrets.ps1 (introduced in Phase B-fix #5)'
+}
+
+# RUNTIME_LOCATION variable — exported by the workflow as TF_VAR_location, picked up by Terraform
+$locationVar = $existingVars | Where-Object { $_.name -eq 'RUNTIME_LOCATION' }
+if ($locationVar) {
+    $locationMatches = ($locationVar.value -eq $RuntimeLocation)
+    Add-Check -Area 'GitHub' -What 'Variable: RUNTIME_LOCATION' -Passed $locationMatches -Detail (Format-Detail $locationMatches "matches '$RuntimeLocation'" "value '$($locationVar.value)' != expected '$RuntimeLocation'")
+} else {
+    Add-Check -Area 'GitHub' -What 'Variable: RUNTIME_LOCATION' -Passed $false -Detail 'MISSING — re-run Set-GitHubSecrets.ps1 (introduced in Phase B-fix #9)'
+}
+
+# RUNTIME_REGION_SUFFIX variable — exported as TF_VAR_region; drives the suffix in runtime resource names
+$regionVar = $existingVars | Where-Object { $_.name -eq 'RUNTIME_REGION_SUFFIX' }
+if ($regionVar) {
+    $regionMatches = ($regionVar.value -eq $RuntimeRegionSuffix)
+    Add-Check -Area 'GitHub' -What 'Variable: RUNTIME_REGION_SUFFIX' -Passed $regionMatches -Detail (Format-Detail $regionMatches "matches '$RuntimeRegionSuffix'" "value '$($regionVar.value)' != expected '$RuntimeRegionSuffix'")
+} else {
+    Add-Check -Area 'GitHub' -What 'Variable: RUNTIME_REGION_SUFFIX' -Passed $false -Detail 'MISSING — re-run Set-GitHubSecrets.ps1 (introduced in Phase B-fix #9)'
 }
 
 #endregion

@@ -111,7 +111,10 @@ param(
     [Parameter()] [string] $GhOrganization,
 
     [Parameter()] [string] $TfStateResourceGroupName = 'rg-terraform-state',
-    [Parameter()] [string] $TfStateContainerName = 'tfstate'
+    [Parameter()] [string] $TfStateContainerName = 'tfstate',
+
+    [Parameter()] [string] $RuntimeLocation = 'centralus',
+    [Parameter()] [string] $RuntimeRegionSuffix = 'cus'
 )
 
 Set-StrictMode -Version Latest
@@ -298,6 +301,18 @@ Write-Action -Verb 'TFSTATE_RESOURCE_GROUP_NAME' -Object "$TfStateResourceGroupN
 Set-GhRepoVariable -Name 'TFSTATE_CONTAINER_NAME' -Value $TfStateContainerName -Repo $repoSlug
 Write-Action -Verb 'TFSTATE_CONTAINER_NAME' -Object "$TfStateContainerName (variable, not secret)" -Outcome 'Set'
 
+# RUNTIME_LOCATION (repo variable) — Azure region for the runtime infra (gallery, KV, VMSS, etc).
+# Distinct from the state backend's region — that was chosen separately at Step 2 in the portal form.
+# Workflows export this as TF_VAR_location, which Terraform picks up automatically.
+Set-GhRepoVariable -Name 'RUNTIME_LOCATION' -Value $RuntimeLocation -Repo $repoSlug
+Write-Action -Verb 'RUNTIME_LOCATION' -Object "$RuntimeLocation (variable, not secret)" -Outcome 'Set'
+
+# RUNTIME_REGION_SUFFIX (repo variable) — short suffix used in runtime resource names
+# (e.g. 'cus' in 'rg-ghrunners-dev-cus'). Should match -RuntimeLocation ('centralus' -> 'cus',
+# 'eastus2' -> 'eus2'). Exported as TF_VAR_region.
+Set-GhRepoVariable -Name 'RUNTIME_REGION_SUFFIX' -Value $RuntimeRegionSuffix -Repo $repoSlug
+Write-Action -Verb 'RUNTIME_REGION_SUFFIX' -Object "$RuntimeRegionSuffix (variable, not secret)" -Outcome 'Set'
+
 #endregion
 
 #region Optional secrets
@@ -334,9 +349,11 @@ Write-Host ''
 Write-Host 'What was set on this repo:' -ForegroundColor Cyan
 Write-Host ('  Repo:        {0}' -f $repoSlug) -ForegroundColor White
 Write-Host ('  Mandatory:   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, GH_PAT, VMSS_ADMIN_PASSWORD') -ForegroundColor White
-Write-Host ('  Variables:   TFSTATE_STORAGE_ACCOUNT    = {0}' -f $StorageAccountName) -ForegroundColor White
+Write-Host ('  Variables:   TFSTATE_STORAGE_ACCOUNT     = {0}' -f $StorageAccountName) -ForegroundColor White
 Write-Host ('               TFSTATE_RESOURCE_GROUP_NAME = {0}' -f $TfStateResourceGroupName) -ForegroundColor White
 Write-Host ('               TFSTATE_CONTAINER_NAME      = {0}' -f $TfStateContainerName) -ForegroundColor White
+Write-Host ('               RUNTIME_LOCATION            = {0}' -f $RuntimeLocation) -ForegroundColor White
+Write-Host ('               RUNTIME_REGION_SUFFIX       = {0}' -f $RuntimeRegionSuffix) -ForegroundColor White
 Write-Host ('  Optional:    GH_SECRETS_PAT, GH_IMAGE_BUILDER_PAT (set if provided), GH_ORGANIZATION') -ForegroundColor White
 
 Write-Host ''

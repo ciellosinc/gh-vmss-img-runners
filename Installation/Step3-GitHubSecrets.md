@@ -95,30 +95,54 @@ Required scopes for a fine-grained PAT:
 
 Skip these if you don't have the consumer-repo wiring set up — TF will gracefully skip those modules.
 
-### 3.5 — Repo variables (3)
+### 3.5 — Repo variables (5)
 
-Three GitHub repo **variables** (not secrets — plaintext in workflow logs) parameterize the Terraform backend so operators can pick custom names without editing `backend.tf`:
+Five GitHub repo **variables** (not secrets — plaintext in workflow logs) parameterize Terraform inputs so operators can customize without editing `backend.tf` or `*.tfvars`:
+
+**State backend** (3 — from Step 2 choices):
 
 | Variable | Default | What it backs |
 |---|---|---|
-| `TFSTATE_STORAGE_ACCOUNT` | (no default — required) | `backend "azurerm" { storage_account_name = ... }` — from Step 2 |
-| `TFSTATE_RESOURCE_GROUP_NAME` | `rg-terraform-state` | `backend "azurerm" { resource_group_name = ... }` — from Step 2 (your choice in the portal form) |
-| `TFSTATE_CONTAINER_NAME` | `tfstate` | `backend "azurerm" { container_name = ... }` — from Step 2 (default usually fine) |
+| `TFSTATE_STORAGE_ACCOUNT` | (no default — required) | `backend "azurerm" { storage_account_name = ... }` |
+| `TFSTATE_RESOURCE_GROUP_NAME` | `rg-terraform-state` | `backend "azurerm" { resource_group_name = ... }` (your portal-form choice) |
+| `TFSTATE_CONTAINER_NAME` | `tfstate` | `backend "azurerm" { container_name = ... }` |
 
-The workflows read all three via `-backend-config="<key>=${{ vars.<NAME> }}"` flags on `terraform init`. If a variable is unset, the workflow falls back to the default (so existing installs on `rg-terraform-state` / `tfstate` keep working without action).
+Workflows read these via `-backend-config="<key>=${{ vars.<NAME> }}"` on `terraform init`. Unset → falls back to default → existing installs on `rg-terraform-state` / `tfstate` keep working.
 
-If you used non-default names in Step 2 (e.g. `rg-ghvmss-tf-state` instead of `rg-terraform-state`), pass them to `Set-GitHubSecrets.ps1` via:
+**Runtime infra** (2 — distinct from the state backend's region; this is where VMSS + KV + functions + gallery + everything else actually run):
+
+| Variable | Default | What it backs |
+|---|---|---|
+| `RUNTIME_LOCATION` | `centralus` | TF variable `location` (full Azure region name). Exported by the workflow as `TF_VAR_location` env var. |
+| `RUNTIME_REGION_SUFFIX` | `cus` | TF variable `region` (short suffix in resource names like `rg-ghrunners-dev-cus`). Exported as `TF_VAR_region`. |
+
+> **Important: state backend region ≠ runtime region.** Step 2's portal form region only controls where the state RG/SA/container live. The runtime infra (VMSS, KV, functions, gallery) lives wherever `RUNTIME_LOCATION` says. These CAN match (clean), or they CAN differ (you have a sub-region preference for state vs. workloads). Operators usually want them to match.
+
+If you used non-default names in Step 2 OR want runtime infra in a non-default region, pass them to `Set-GitHubSecrets.ps1` via:
 
 ```pwsh
 ./Set-GitHubSecrets.ps1 `
     -GitHubOrg '<your-org>' -GitHubRepo '<your-repo>' `
     -SubscriptionId '<sub>' -StorageAccountName '<sa>' `
-    -TfStateResourceGroupName 'rg-ghvmss-tf-state' `       # ← your custom name
+    -TfStateResourceGroupName 'rg-ghvmss-tf-state' `       # ← your state-backend RG (Step 2)
     -TfStateContainerName 'tfstate' `                       # ← default if you kept it
+    -RuntimeLocation 'eastus2' `                            # ← Azure region for runtime infra
+    -RuntimeRegionSuffix 'eus2' `                           # ← short suffix used in resource names
     -InputPath '..\.bootstrap-output.json'
 ```
 
-> **Why variables instead of secrets:** workflow log readability + the values aren't sensitive (storage account / RG / container names aren't secret; the AAD-only access policy keeps them safe even when the names are public).
+Common `RUNTIME_LOCATION` → `RUNTIME_REGION_SUFFIX` pairings (pick what matches your operator naming convention):
+
+| Location | Suffix |
+|---|---|
+| `centralus` | `cus` |
+| `eastus` | `eus` |
+| `eastus2` | `eus2` |
+| `westus2` | `wus2` |
+| `westeurope` | `weu` |
+| `northeurope` | `neu` |
+
+> **Why variables instead of secrets:** workflow log readability + the values aren't sensitive (storage account / RG / container names + region info aren't secret; the AAD-only access policy keeps state-backend data safe even when the names are public).
 
 ---
 

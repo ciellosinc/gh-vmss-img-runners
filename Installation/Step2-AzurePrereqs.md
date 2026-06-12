@@ -41,6 +41,9 @@ From the repo root `README.md`, click the **Deploy to Azure** badge. The Azure P
 
 Click **Review + create**, then **Create**. Deployment completes in 1–2 minutes.
 
+> **Important: region scope here is ONLY for the state backend.**
+> The region you pick above only controls where the Terraform state RG / storage account / container live. **It does NOT set the region for the actual runtime infra** (VMSS, Key Vault, function apps, gallery). Runtime region is configured separately via the `RUNTIME_LOCATION` and `RUNTIME_REGION_SUFFIX` GH variables seeded in [Step 3](Step3-GitHubSecrets.md#35--repo-variables-5). Operators usually pick the same region for both, but you don't have to.
+
 ### 2.2 — Option B: Run from the CLI (alternative if you prefer)
 
 ```bash
