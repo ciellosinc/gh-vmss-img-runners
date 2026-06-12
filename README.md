@@ -2,7 +2,7 @@
 
 GitHub self-hosted runners on Azure Virtual Machine Scale Sets — provisioned by Terraform, fronted by two Function Apps (auto-scaling), and built from a Packer-baked Windows Server 2022 image.
 
-[![Deploy state backend to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fgitspacecadet%2Fgh-vmss-img-runners%2Fmain%2FInstallation%2Fprereqs%2Fazuredeploy.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2Fgitspacecadet%2Fgh-vmss-img-runners%2Fmain%2FInstallation%2Fprereqs%2FcreateUiDefinition.json)
+[![Deploy state backend to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fciellosinc%2Fgh-vmss-img-runners%2Fmain%2FInstallation%2Fprereqs%2Fazuredeploy.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2Fciellosinc%2Fgh-vmss-img-runners%2Fmain%2FInstallation%2Fprereqs%2FcreateUiDefinition.json)
 
 > The button above kicks off **Step 2** of the install flow. **Start with [Step 1](Installation/Step1-EntraBootstrap.md)** — it creates the OIDC service principal that Step 2 needs.
 
