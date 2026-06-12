@@ -122,3 +122,8 @@ Logs/ghrunners-runtime-test-2025_12_01-20.56UTC_validation.json
 # Installation/Bootstrap-Entra.ps1 output — contains SP object IDs, not secrets,
 # but still scoped to a specific install so should not be committed
 Installation/.bootstrap-output.json
+
+# Terraform provider binaries
+terraform/**/.terraform/
+*.tfstate*
+
