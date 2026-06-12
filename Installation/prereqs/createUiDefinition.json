@@ -1,0 +1,119 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/0.1.2-preview/CreateUIDefinition.MultiVm.json#",
+  "handler": "Microsoft.Azure.CreateUIDef",
+  "version": "0.1.2-preview",
+  "parameters": {
+    "config": {
+      "isWizard": true,
+      "basics": {
+        "description": "Step 2 of the gh-vmss-img-runners installation flow. This creates the Terraform state backend (resource group + storage account + tfstate container) in your subscription, and grants Storage Blob Data Contributor to the OIDC service principal you created in Step 1.\n\n**Before continuing:** complete Step 1 (`Bootstrap-Entra.ps1`) and copy the **Service Principal Object ID** from its output.",
+        "location": {
+          "label": "Region",
+          "toolTip": "Region for the state backend resources.",
+          "resourceTypes": [
+            "Microsoft.Storage/storageAccounts"
+          ]
+        }
+      }
+    },
+    "basics": [
+      {
+        "name": "guidanceInfoBox",
+        "type": "Microsoft.Common.InfoBox",
+        "visible": true,
+        "options": {
+          "icon": "Info",
+          "text": "If you haven't completed Step 1 yet, cancel this dialog and run Bootstrap-Entra.ps1 first. The Service Principal Object ID from its output is required below.",
+          "uri": "https://github.com/gitspacecadet/gh-vmss-img-runners/blob/main/Installation/Step2-AzurePrereqs.md"
+        }
+      }
+    ],
+    "steps": [
+      {
+        "name": "identity",
+        "label": "Identity (from Step 1)",
+        "elements": [
+          {
+            "name": "spObjectIdInfo",
+            "type": "Microsoft.Common.TextBlock",
+            "visible": true,
+            "options": {
+              "text": "Paste the 'SP Object ID' value printed by Bootstrap-Entra.ps1 in Step 1. Use the OBJECT ID — not the Client ID.",
+              "link": {
+                "label": "What's the difference between Object ID and Client ID?",
+                "uri": "https://learn.microsoft.com/en-us/entra/identity-platform/app-objects-and-service-principals"
+              }
+            }
+          },
+          {
+            "name": "spObjectId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Service Principal Object ID",
+            "toolTip": "Object ID (GUID) of the OIDC service principal from Step 1.",
+            "constraints": {
+              "required": true,
+              "regex": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+              "validationMessage": "Enter a valid GUID (e.g. 11111111-2222-3333-4444-555555555555)."
+            }
+          }
+        ]
+      },
+      {
+        "name": "naming",
+        "label": "Naming",
+        "elements": [
+          {
+            "name": "namingInfo",
+            "type": "Microsoft.Common.TextBlock",
+            "visible": true,
+            "options": {
+              "text": "Default names match exactly what the Terraform backend (`backend.tf`) expects. Override only if you have a naming convention you must follow."
+            }
+          },
+          {
+            "name": "resourceGroupName",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Resource group name",
+            "defaultValue": "rg-terraform-state",
+            "toolTip": "Resource group that will hold the state storage account. backend.tf expects 'rg-terraform-state'.",
+            "constraints": {
+              "required": true,
+              "regex": "^[-_a-zA-Z0-9.()]{1,90}$",
+              "validationMessage": "1-90 chars: alphanumerics, periods, hyphens, underscores, parentheses."
+            }
+          },
+          {
+            "name": "storageAccountName",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Storage account name (globally unique)",
+            "toolTip": "3-24 lowercase alphanumerics, globally unique across Azure. Tip: use something like 'sttfstate' + a short suffix.",
+            "constraints": {
+              "required": true,
+              "regex": "^[a-z0-9]{3,24}$",
+              "validationMessage": "3-24 lowercase alphanumeric characters."
+            }
+          },
+          {
+            "name": "containerName",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Blob container name",
+            "defaultValue": "tfstate",
+            "toolTip": "Container that will hold the .tfstate blobs. backend.tf expects 'tfstate'.",
+            "constraints": {
+              "required": true,
+              "regex": "^[a-z0-9-]{3,63}$",
+              "validationMessage": "3-63 lowercase alphanumerics and hyphens."
+            }
+          }
+        ]
+      }
+    ],
+    "outputs": {
+      "spObjectId": "[steps('identity').spObjectId]",
+      "resourceGroupName": "[steps('naming').resourceGroupName]",
+      "storageAccountName": "[steps('naming').storageAccountName]",
+      "containerName": "[steps('naming').containerName]",
+      "location": "[location()]"
+    }
+  }
+}

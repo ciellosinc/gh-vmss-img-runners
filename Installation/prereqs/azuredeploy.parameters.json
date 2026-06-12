@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "_comment_": "Sample parameter file for local az CLI invocations. The Deploy-to-Azure portal button uses createUiDefinition.json instead. spObjectId is the only mandatory value with no useful default — paste it from Bootstrap-Entra.ps1's output. Other params have defaults in azuredeploy.json; override here if you want different names.",
+  "parameters": {
+    "spObjectId": {
+      "value": "<paste-sp-object-id-from-step-1-output>"
+    },
+    "resourceGroupName": {
+      "value": "rg-terraform-state"
+    },
+    "containerName": {
+      "value": "tfstate"
+    },
+    "storageAccountName": {
+      "value": "<choose-globally-unique-name-3-to-24-lowercase-alphanumerics>"
+    },
+    "location": {
+      "value": "centralus"
+    }
+  }
+}

@@ -1,0 +1,182 @@
+# =============================================================================
+# TERRAFORM STATE OPS - State Management Operations
+# =============================================================================
+# Provides emergency state management operations:
+#   state-rm  : Remove stale resource addresses from state
+#   state-import : Import existing Azure resources into state
+#
+# Use Case: When a failed apply leaves orphaned state entries that block
+# subsequent applies (e.g., provider migration from azurerm to azapi).
+#
+# Triggers:
+# - Manual dispatch only (destructive operation)
+# =============================================================================
+
+name: Terraform State Ops
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to operate on'
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+        default: 'dev'
+
+      operation:
+        description: 'State operation'
+        required: true
+        type: choice
+        options:
+          - state-rm
+          - state-import
+        default: 'state-rm'
+
+      resource_addresses:
+        description: |
+          Newline-separated list of resource addresses.
+          For state-rm: one address per line (e.g. module.foundation.azurerm_storage_table.vmss_scale_available)
+          For state-import: "address=azure_id" per line (e.g. module.foundation.azapi_resource.vmss_scale_available=/subscriptions/xxx/...)
+        required: true
+        type: string
+
+env:
+  TERRAFORM_VERSION: '1.9.8'
+  TF_IN_AUTOMATION: 'true'
+  ARM_USE_OIDC: true
+  ARM_USE_AZUREAD: true
+  WORKING_DIRECTORY: 'terraform'
+
+permissions:
+  id-token: write
+  contents: read
+
+# GHA's default Linux bash is `set -e` without `pipefail`. Set it at the workflow
+# level so any piped step (e.g. `terraform plan | tee plan-output.txt`) fails
+# loudly. See .claude/Docs/Tracking/2026-06-01-ci-pipefail-gap-rca-pr22.md.
+defaults:
+  run:
+    shell: bash --noprofile --norc -eo pipefail {0}
+
+jobs:
+  state-ops:
+    name: State ${{ inputs.operation }} (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=ghrunners/${{ inputs.environment }}/terraform.tfstate" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: Show current state (before)
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          echo "## State Before Operation" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          terraform state list 2>&1 | grep -E "(storage_table|azapi_resource)" || echo "(no matching entries)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Terraform state rm
+        if: inputs.operation == 'state-rm'
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          echo "## Removing State Entries" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          # Process each address (one per line)
+          while IFS= read -r address; do
+            address=$(echo "$address" | xargs)   # trim whitespace
+            [ -z "$address" ] && continue
+
+            echo "Removing: $address"
+            terraform state rm "$address" 2>&1
+            echo "  → removed: $address" >> $GITHUB_STEP_SUMMARY
+          done <<< "${{ inputs.resource_addresses }}"
+
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Terraform state import
+        if: inputs.operation == 'state-import'
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          TF_VAR_vmss_admin_password: ${{ secrets.VMSS_ADMIN_PASSWORD }}
+          TF_VAR_github_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          TF_VAR_github_pat: ${{ secrets.GH_PAT }}
+          TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}
+          TF_VAR_github_installation_id: ${{ secrets.GH_INSTALLATION_ID }}
+          TF_VAR_github_organization: ${{ secrets.GH_ORGANIZATION }}
+          TF_VAR_image_version: 'placeholder'
+        run: |
+          echo "## Importing Resources into State" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          # Process each "address=azure_id" entry (one per line)
+          while IFS= read -r entry; do
+            entry=$(echo "$entry" | xargs)   # trim whitespace
+            [ -z "$entry" ] && continue
+
+            address="${entry%%=*}"
+            azure_id="${entry#*=}"
+
+            echo "Importing: $address ← $azure_id"
+            terraform import \
+              -var-file=environments/${{ inputs.environment }}.tfvars \
+              "$address" "$azure_id" 2>&1
+            echo "  → imported: $address" >> $GITHUB_STEP_SUMMARY
+          done <<< "${{ inputs.resource_addresses }}"
+
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Show current state (after)
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          echo "## State After Operation" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          terraform state list 2>&1 | grep -E "(storage_table|azapi_resource)" || echo "(no matching entries)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

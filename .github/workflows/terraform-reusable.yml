@@ -1,0 +1,306 @@
+# =============================================================================
+# TERRAFORM REUSABLE WORKFLOW
+# =============================================================================
+# Reusable workflow for Terraform operations
+# Called by other workflows to avoid code duplication
+#
+# Usage:
+#   jobs:
+#     deploy:
+#       uses: ./.github/workflows/terraform-reusable.yml
+#       with:
+#         environment: dev
+#         action: plan
+#       secrets: inherit
+# =============================================================================
+
+name: Terraform (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Target environment (dev, test, prod)'
+        required: true
+        type: string
+
+      action:
+        description: 'Terraform action (plan, apply, destroy)'
+        required: true
+        type: string
+        default: 'plan'
+
+      image_version:
+        description: 'Image version for VMSS'
+        required: false
+        type: string
+        default: '1.0.0'
+
+      deploy_vmss:
+        description: 'Deploy VMSS'
+        required: false
+        type: boolean
+        default: true
+
+      deploy_functions:
+        description: 'Deploy Function Apps'
+        required: false
+        type: boolean
+        default: true
+
+      working_directory:
+        description: 'Terraform working directory'
+        required: false
+        type: string
+        default: 'terraform'
+
+      terraform_version:
+        description: 'Terraform version'
+        required: false
+        type: string
+        default: '1.9.8'
+
+    outputs:
+      plan_exit_code:
+        description: 'Plan exit code'
+        value: ${{ jobs.plan.outputs.exit_code }}
+      changes_detected:
+        description: 'Whether changes were detected'
+        value: ${{ jobs.plan.outputs.changes_detected }}
+      apply_result:
+        description: 'Apply result'
+        value: ${{ jobs.apply.result }}
+
+env:
+  TF_IN_AUTOMATION: 'true'
+  ARM_USE_OIDC: true
+  ARM_USE_AZUREAD: true
+
+# GHA's default Linux bash is `set -e` without `pipefail`. Set it at the workflow
+# level so any piped step (e.g. `terraform plan | tee plan-output.txt`) fails
+# loudly. See .claude/Docs/Tracking/2026-06-01-ci-pipefail-gap-rca-pr22.md.
+defaults:
+  run:
+    shell: bash --noprofile --norc -eo pipefail {0}
+
+jobs:
+  # ===========================================================================
+  # Terraform Plan
+  # ===========================================================================
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      exit_code: ${{ steps.plan.outputs.exit_code }}
+      changes_detected: ${{ steps.plan.outputs.changes_detected }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=ghrunners/${{ inputs.environment }}/terraform.tfstate" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          TF_VAR_vmss_admin_password: ${{ secrets.VMSS_ADMIN_PASSWORD }}
+          TF_VAR_github_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          TF_VAR_github_pat: ${{ secrets.GH_PAT }}
+          TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}
+          TF_VAR_github_installation_id: ${{ secrets.GH_INSTALLATION_ID }}
+          TF_VAR_github_organization: ${{ secrets.GH_ORGANIZATION }}
+          TF_VAR_image_version: ${{ inputs.image_version }}
+          TF_VAR_deploy_vmss: ${{ inputs.deploy_vmss }}
+          TF_VAR_deploy_functions: ${{ inputs.deploy_functions }}
+        run: |
+          set +e
+          terraform plan \
+            -var-file=environments/${{ inputs.environment }}.tfvars \
+            -out=tfplan \
+            -detailed-exitcode \
+            -no-color 2>&1 | tee plan-output.txt
+
+          EXIT_CODE=$?
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+
+          if [ $EXIT_CODE -eq 2 ]; then
+            echo "changes_detected=true" >> $GITHUB_OUTPUT
+          else
+            echo "changes_detected=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Fail on actual error
+          if [ $EXIT_CODE -eq 1 ]; then
+            exit 1
+          fi
+
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
+          path: |
+            ${{ inputs.working_directory }}/tfplan
+            ${{ inputs.working_directory }}/plan-output.txt
+          retention-days: 7
+
+  # ===========================================================================
+  # Terraform Apply
+  # ===========================================================================
+  apply:
+    name: Apply
+    runs-on: ubuntu-latest
+    needs: plan
+    if: |
+      inputs.action == 'apply' &&
+      needs.plan.outputs.changes_detected == 'true'
+    concurrency:
+      group: terraform-${{ inputs.environment }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
+          path: ${{ inputs.working_directory }}
+
+      - name: Terraform Init
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=ghrunners/${{ inputs.environment }}/terraform.tfstate" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: Terraform Apply
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          terraform apply -auto-approve tfplan 2>&1 | tee apply-output.txt
+
+      - name: Get Outputs
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          echo "## Infrastructure Outputs" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          terraform output -json >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Terraform Destroy
+  # ===========================================================================
+  destroy:
+    name: Destroy
+    runs-on: ubuntu-latest
+    needs: plan
+    if: inputs.action == 'destroy'
+    concurrency:
+      group: terraform-${{ inputs.environment }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=ghrunners/${{ inputs.environment }}/terraform.tfstate" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: Terraform Destroy
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          TF_VAR_vmss_admin_password: ${{ secrets.VMSS_ADMIN_PASSWORD }}
+          TF_VAR_github_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          TF_VAR_github_pat: ${{ secrets.GH_PAT }}
+          TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}
+          TF_VAR_github_installation_id: ${{ secrets.GH_INSTALLATION_ID }}
+          TF_VAR_github_organization: ${{ secrets.GH_ORGANIZATION }}
+          TF_VAR_image_version: ${{ inputs.image_version }}
+        run: |
+          terraform destroy \
+            -var-file=environments/${{ inputs.environment }}.tfvars \
+            -auto-approve 2>&1 | tee destroy-output.txt

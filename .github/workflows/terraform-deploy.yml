@@ -1,0 +1,593 @@
+# =============================================================================
+# TERRAFORM DEPLOY - Infrastructure Deployment
+# =============================================================================
+# Deploys Terraform infrastructure to Azure environments
+# - Supports dev, test, prod environments
+# - Uses GitHub Environments for approval gates (prod requires approval)
+# - OIDC authentication with Azure (no secrets required)
+# - State management via Azure Storage with AAD auth
+#
+# Triggers:
+# - Manual dispatch with environment selection
+# - Manual dispatch ONLY (push:main auto-apply was removed 2026-04-27 to
+#   prevent stacked-PR merges from destroying resources in unmerged branches)
+# =============================================================================
+
+name: Terraform Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+        default: 'dev'
+
+      action:
+        description: 'Terraform action'
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+        default: 'plan'
+
+      image_repo:
+        description: 'GitHub repo for VMSS runner images (owner/repo)'
+        required: false
+        type: string
+        default: 'gitspacecadet/vmss-runner-images'
+
+      image_version:
+        description: 'Image version override (leave empty to use latest from image_repo)'
+        required: false
+        type: string
+        default: ''
+
+      deploy_vmss:
+        description: 'Deploy VMSS'
+        required: false
+        type: boolean
+        default: true
+
+      deploy_functions:
+        description: 'Deploy Function Apps'
+        required: false
+        type: boolean
+        default: true
+
+      destroy_scope:
+        description: 'Destroy scope (only used with destroy action)'
+        required: false
+        type: choice
+        options:
+          - full-infrastructure
+          - runtime-only
+        default: 'full-infrastructure'
+
+  # NOTE: push:main auto-apply was removed 2026-04-27.
+  # Rationale: when stacked feature branches exist (multi-PR work in flight),
+  # merging any single PR to main triggered an apply against main's TF code,
+  # which was BEHIND the live dev state — destroying resources from unmerged
+  # branches. UAMI recreate symptom on 2026-04-26: merging PR #4 destroyed
+  # the webhook deploy UAMI + table + function app from PRs #5-#9, then a
+  # subsequent recovery apply minted a new UAMI clientId, breaking the
+  # ScaleOut webhook deploy until the env secret was manually updated.
+  # See .claude/Docs/Tracking/2026-04-26-gh-env-secrets-for-deploy-uami.md.
+  #
+  # Apply paths going forward are workflow_dispatch only. Merge-to-main does
+  # not trigger any apply; an operator explicitly fires the deploy after
+  # confirming main reflects the intended target state.
+
+env:
+  TERRAFORM_VERSION: '1.9.8'
+  TF_IN_AUTOMATION: 'true'
+  ARM_USE_OIDC: true
+  ARM_USE_AZUREAD: true
+  WORKING_DIRECTORY: 'terraform'
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+# GHA's default Linux bash is `set -e` without `pipefail`. Set it at the workflow
+# level so any piped step (e.g. `terraform plan | tee plan-output.txt`) fails
+# loudly. See .claude/Docs/Tracking/2026-06-01-ci-pipefail-gap-rca-pr22.md.
+defaults:
+  run:
+    shell: bash --noprofile --norc -eo pipefail {0}
+
+jobs:
+  # ===========================================================================
+  # Setup and Configuration
+  # ===========================================================================
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.config.outputs.environment }}
+      action: ${{ steps.config.outputs.action }}
+      image_repo: ${{ steps.latest-image.outputs.repo }}
+      image_version: ${{ steps.config.outputs.image_version }}
+      deploy_vmss: ${{ steps.config.outputs.deploy_vmss }}
+      deploy_functions: ${{ steps.config.outputs.deploy_functions }}
+      destroy_scope: ${{ steps.config.outputs.destroy_scope }}
+
+    steps:
+      - name: Get latest image version
+        id: latest-image
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          # Use provided image_repo or default
+          IMAGE_REPO="${{ inputs.image_repo || 'gitspacecadet/vmss-runner-images' }}"
+          echo "Fetching latest release from: $IMAGE_REPO"
+
+          # Fetch latest release from image repo
+          LATEST_VERSION=$(gh release view --repo "$IMAGE_REPO" --json tagName -q '.tagName' 2>/dev/null || echo "")
+          # Remove 'image-v' prefix if present (tag format: image-v1.20251204.1349)
+          LATEST_VERSION="${LATEST_VERSION#image-v}"
+          echo "version=${LATEST_VERSION:-1.0.0}" >> $GITHUB_OUTPUT
+          echo "repo=${IMAGE_REPO}" >> $GITHUB_OUTPUT
+          echo "Latest image version from $IMAGE_REPO: ${LATEST_VERSION:-1.0.0}"
+
+      - name: Configure deployment
+        id: config
+        run: |
+          # Workflow is workflow_dispatch only (push:main auto-apply removed
+          # 2026-04-27 — see top-of-file comment + tracking doc).
+          echo "environment=${{ inputs.environment }}" >> $GITHUB_OUTPUT
+          echo "action=${{ inputs.action }}" >> $GITHUB_OUTPUT
+          # Use provided image_version or fall back to latest
+          if [ -n "${{ inputs.image_version }}" ]; then
+            echo "image_version=${{ inputs.image_version }}" >> $GITHUB_OUTPUT
+          else
+            echo "image_version=${{ steps.latest-image.outputs.version }}" >> $GITHUB_OUTPUT
+          fi
+          echo "deploy_vmss=${{ inputs.deploy_vmss }}" >> $GITHUB_OUTPUT
+          echo "deploy_functions=${{ inputs.deploy_functions }}" >> $GITHUB_OUTPUT
+          echo "destroy_scope=${{ inputs.destroy_scope || 'full-infrastructure' }}" >> $GITHUB_OUTPUT
+
+      - name: Display configuration
+        run: |
+          echo "## Deployment Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${{ steps.config.outputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Action | \`${{ steps.config.outputs.action }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image Repo | \`${{ steps.latest-image.outputs.repo }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image Version | \`${{ steps.config.outputs.image_version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy VMSS | \`${{ steps.config.outputs.deploy_vmss }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy Functions | \`${{ steps.config.outputs.deploy_functions }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Destroy Scope | \`${{ steps.config.outputs.destroy_scope }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Trigger | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Terraform Plan
+  # ===========================================================================
+  plan:
+    name: Plan (${{ needs.setup.outputs.environment }})
+    runs-on: ubuntu-latest
+    needs: setup
+    environment: ${{ needs.setup.outputs.environment }}-plan
+    outputs:
+      plan_exit_code: ${{ steps.plan.outputs.exit_code }}
+      changes_detected: ${{ steps.plan.outputs.changes_detected }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=ghrunners/${{ needs.setup.outputs.environment }}/terraform.tfstate" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          TF_VAR_vmss_admin_password: ${{ secrets.VMSS_ADMIN_PASSWORD }}
+          TF_VAR_github_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          TF_VAR_github_pat: ${{ secrets.GH_PAT }}
+          TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}
+          TF_VAR_github_installation_id: ${{ secrets.GH_INSTALLATION_ID }}
+          TF_VAR_github_organization: ${{ secrets.GH_ORGANIZATION }}
+          TF_VAR_github_secrets_pat: ${{ secrets.GH_SECRETS_PAT }}
+          TF_VAR_github_image_builder_pat: ${{ secrets.GH_IMAGE_BUILDER_PAT }}
+          TF_VAR_image_version: ${{ needs.setup.outputs.image_version }}
+          TF_VAR_deploy_vmss: ${{ needs.setup.outputs.deploy_vmss }}
+          TF_VAR_deploy_functions: ${{ needs.setup.outputs.deploy_functions }}
+        run: |
+          set +e
+          terraform plan \
+            -var-file=environments/${{ needs.setup.outputs.environment }}.tfvars \
+            -out=tfplan \
+            -detailed-exitcode \
+            -lock-timeout=120s \
+            -no-color > plan-output.txt 2>&1
+          EXIT_CODE=$?
+          cat plan-output.txt
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+
+          # Exit codes: 0 = no changes, 1 = error, 2 = changes
+          if [ $EXIT_CODE -eq 2 ]; then
+            echo "changes_detected=true" >> $GITHUB_OUTPUT
+          else
+            echo "changes_detected=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Generate plan summary
+          echo "## Terraform Plan - ${{ needs.setup.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "**No changes detected**" >> $GITHUB_STEP_SUMMARY
+          elif [ $EXIT_CODE -eq 1 ]; then
+            echo "**Error during planning**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -50 plan-output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "**Changes detected**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -E "^(Plan:|  #|  \+|  -|  ~)" plan-output.txt >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload Plan Artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ needs.setup.outputs.environment }}
+          path: |
+            ${{ env.WORKING_DIRECTORY }}/tfplan
+            ${{ env.WORKING_DIRECTORY }}/plan-output.txt
+          retention-days: 7
+
+  # ===========================================================================
+  # Terraform Apply (requires approval for prod)
+  # ===========================================================================
+  apply:
+    name: Apply (${{ needs.setup.outputs.environment }})
+    runs-on: ubuntu-latest
+    needs: [setup, plan]
+    if: |
+      needs.setup.outputs.action == 'apply' &&
+      needs.plan.outputs.changes_detected == 'true'
+    environment: ${{ needs.setup.outputs.environment }}
+    concurrency:
+      group: terraform-${{ needs.setup.outputs.environment }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Download Plan Artifact
+        id: download-plan
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ needs.setup.outputs.environment }}
+          path: ${{ env.WORKING_DIRECTORY }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=ghrunners/${{ needs.setup.outputs.environment }}/terraform.tfstate" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: Terraform Apply
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          TF_VAR_vmss_admin_password: ${{ secrets.VMSS_ADMIN_PASSWORD }}
+          TF_VAR_github_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          TF_VAR_github_pat: ${{ secrets.GH_PAT }}
+          TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}
+          TF_VAR_github_installation_id: ${{ secrets.GH_INSTALLATION_ID }}
+          TF_VAR_github_organization: ${{ secrets.GH_ORGANIZATION }}
+          TF_VAR_github_secrets_pat: ${{ secrets.GH_SECRETS_PAT }}
+          TF_VAR_github_image_builder_pat: ${{ secrets.GH_IMAGE_BUILDER_PAT }}
+          TF_VAR_image_version: ${{ needs.setup.outputs.image_version }}
+          TF_VAR_deploy_vmss: ${{ needs.setup.outputs.deploy_vmss }}
+          TF_VAR_deploy_functions: ${{ needs.setup.outputs.deploy_functions }}
+        run: |
+          echo "Applying Terraform changes..."
+          # -lock-timeout=120s: wait up to 2 min for the state lease to free
+          # before erroring. Mitigates the plan->apply race observed on
+          # 2026-05-08 run 25559674471 where Apply tried to acquire the lock
+          # before Plan'\''s lease had fully released. Also covers manual
+          # operator re-runs that briefly overlap with prior sessions.
+          if [ -f tfplan ] && [ "${{ steps.download-plan.outcome }}" = "success" ]; then
+            echo "Using saved plan file"
+            terraform apply -auto-approve -lock-timeout=120s tfplan 2>&1 | tee apply-output.txt
+          else
+            echo "Plan artifact unavailable - running fresh plan+apply"
+            terraform apply -auto-approve -lock-timeout=120s \
+              -var-file=environments/${{ needs.setup.outputs.environment }}.tfvars \
+              2>&1 | tee apply-output.txt
+          fi
+          # Capture terraform's actual exit code, not tee's. With workflow-level
+          # `defaults.run.shell: bash --noprofile --norc -eo pipefail {0}` (added
+          # 2026-06-01 — see RCA at .claude/Docs/Tracking/2026-06-01-ci-pipefail-gap-rca-pr22.md),
+          # pipefail now gates this at the substrate level. Keeping the explicit
+          # PIPESTATUS check belt-and-suspenders style: it survives accidental
+          # removal of the defaults block, and the 2026-05-08 incident's lesson
+          # (a TF lock-acquire failure echoing "Apply completed successfully")
+          # is worth permanent defense-in-depth.
+          TF_EXIT=${PIPESTATUS[0]}
+
+          echo "## Terraform Apply - ${{ needs.setup.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ $TF_EXIT -ne 0 ]; then
+            echo "**Apply FAILED with exit code $TF_EXIT**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -50 apply-output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit $TF_EXIT
+          fi
+          echo "**Apply completed successfully**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E "^(Apply complete|  created|  destroyed|  changed)" apply-output.txt >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Get Terraform Outputs
+        id: outputs
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          echo "## Infrastructure Outputs" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          terraform output -json >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Terraform Destroy (requires manual trigger and approval)
+  # ===========================================================================
+  destroy:
+    name: Destroy (${{ needs.setup.outputs.environment }})
+    runs-on: ubuntu-latest
+    needs: [setup, plan]
+    if: needs.setup.outputs.action == 'destroy'
+    environment: ${{ needs.setup.outputs.environment }}-destroy
+    concurrency:
+      group: terraform-${{ needs.setup.outputs.environment }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=ghrunners/${{ needs.setup.outputs.environment }}/terraform.tfstate" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: Determine Destroy Targets
+        id: targets
+        run: |
+          SCOPE="${{ needs.setup.outputs.destroy_scope }}"
+          echo "Destroy scope: $SCOPE"
+          
+          if [ "$SCOPE" = "runtime-only" ]; then
+            # Runtime-only: Destroy only VMSS and Function Apps (module.runtime)
+            # Keeps: VNet, NSG, Load Balancer, Managed Identities, Storage, Key Vault, Compute Gallery
+            echo "targets=-target=module.runtime" >> $GITHUB_OUTPUT
+            echo "scope=Runtime Only (VMSS + Function Apps)" >> $GITHUB_OUTPUT
+            echo "description=Destroying runtime components only. Foundation infrastructure (networking, identities, storage, gallery) will be preserved." >> $GITHUB_OUTPUT
+          else
+            # Full infrastructure: Destroy everything
+            echo "targets=" >> $GITHUB_OUTPUT
+            echo "scope=Full Infrastructure" >> $GITHUB_OUTPUT
+            echo "description=Destroying ALL infrastructure including networking, identities, and storage." >> $GITHUB_OUTPUT
+          fi
+
+      - name: Terraform Destroy
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          TF_VAR_vmss_admin_password: ${{ secrets.VMSS_ADMIN_PASSWORD }}
+          TF_VAR_github_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          TF_VAR_github_pat: ${{ secrets.GH_PAT }}
+          TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}
+          TF_VAR_github_installation_id: ${{ secrets.GH_INSTALLATION_ID }}
+          TF_VAR_github_organization: ${{ secrets.GH_ORGANIZATION }}
+          TF_VAR_github_secrets_pat: ${{ secrets.GH_SECRETS_PAT }}
+          TF_VAR_github_image_builder_pat: ${{ secrets.GH_IMAGE_BUILDER_PAT }}
+          TF_VAR_image_version: ${{ needs.setup.outputs.image_version }}
+        run: |
+          echo "::warning::Destroying infrastructure in ${{ needs.setup.outputs.environment }}!"
+          echo "::notice::Scope: ${{ steps.targets.outputs.scope }}"
+          echo "${{ steps.targets.outputs.description }}"
+          
+          # Build destroy command with optional targets.
+          # -lock-timeout=120s mirrors plan+apply: wait up to 2 min for the
+          # state lease to free rather than failing immediately.
+          DESTROY_CMD="terraform destroy -lock-timeout=120s -var-file=environments/${{ needs.setup.outputs.environment }}.tfvars"
+
+          if [ -n "${{ steps.targets.outputs.targets }}" ]; then
+            DESTROY_CMD="$DESTROY_CMD ${{ steps.targets.outputs.targets }}"
+          fi
+
+          DESTROY_CMD="$DESTROY_CMD -auto-approve"
+
+          echo "Executing: $DESTROY_CMD"
+          eval "$DESTROY_CMD" 2>&1 | tee destroy-output.txt
+          TF_EXIT=${PIPESTATUS[0]}
+
+          echo "## Terraform Destroy - ${{ needs.setup.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Scope:** ${{ steps.targets.outputs.scope }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.targets.outputs.description }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ $TF_EXIT -ne 0 ]; then
+            echo "### Destroy FAILED (exit code $TF_EXIT)" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -50 destroy-output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit $TF_EXIT
+          fi
+          echo "### Destroyed Resources" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E "^(Destroy complete|  destroyed)" destroy-output.txt >> $GITHUB_STEP_SUMMARY || echo "See full output for details" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.setup.outputs.destroy_scope }}" = "runtime-only" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Preserved Resources (Foundation)" >> $GITHUB_STEP_SUMMARY
+            echo "- Virtual Network and Subnets" >> $GITHUB_STEP_SUMMARY
+            echo "- Network Security Group" >> $GITHUB_STEP_SUMMARY
+            echo "- Load Balancer and Public IP" >> $GITHUB_STEP_SUMMARY
+            echo "- Managed Identities" >> $GITHUB_STEP_SUMMARY
+            echo "- Storage Accounts" >> $GITHUB_STEP_SUMMARY
+            echo "- Key Vault" >> $GITHUB_STEP_SUMMARY
+            echo "- Compute Gallery and Image Definition" >> $GITHUB_STEP_SUMMARY
+            echo "- Log Analytics Workspace" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "💡 **Next Step:** Run with action=\`apply\` to redeploy runtime components." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ===========================================================================
+  # No Changes Handler
+  # ===========================================================================
+  no-changes:
+    name: No Changes
+    runs-on: ubuntu-latest
+    needs: [setup, plan]
+    if: |
+      needs.setup.outputs.action == 'apply' &&
+      needs.plan.outputs.changes_detected == 'false'
+
+    steps:
+      - name: Report No Changes
+        run: |
+          echo "## No Changes Detected" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Infrastructure is already up-to-date for **${{ needs.setup.outputs.environment }}** environment." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "No apply was performed." >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Summary
+  # ===========================================================================
+  summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [setup, plan, apply, destroy, no-changes]
+    if: always()
+
+    steps:
+      - name: Generate Summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${{ needs.setup.outputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Action | \`${{ needs.setup.outputs.action }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image Version | \`${{ needs.setup.outputs.image_version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Plan Result | ${{ needs.plan.result == 'success' && 'Success' || 'Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Changes Detected | ${{ needs.plan.outputs.changes_detected }} |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.setup.outputs.action }}" = "apply" ]; then
+            if [ "${{ needs.plan.outputs.changes_detected }}" = "true" ]; then
+              echo "| Apply Result | ${{ needs.apply.result == 'success' && 'Success' || needs.apply.result == 'skipped' && 'Skipped' || 'Failed' }} |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| Apply Result | No changes to apply |" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
+          if [ "${{ needs.setup.outputs.action }}" = "destroy" ]; then
+            echo "| Destroy Scope | \`${{ needs.setup.outputs.destroy_scope }}\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| Destroy Result | ${{ needs.destroy.result == 'success' && 'Success' || needs.destroy.result == 'skipped' && 'Skipped' || 'Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Workflow: [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,168 @@
+# -----------------------------------------------------------------------------
+# Terraform Import Blocks - Foundation Resources Only
+# -----------------------------------------------------------------------------
+# Import existing foundation resources into Terraform state.
+# These are the base resources that were deployed separately and need to be
+# in state for the runtime module to reference them.
+#
+# Runtime resources (VMSS, Functions, RBAC) will be deployed fresh.
+# -----------------------------------------------------------------------------
+
+locals {
+  # Common prefix for resource IDs
+  rg_id = "/subscriptions/${data.azurerm_client_config.current.subscription_id}/resourceGroups/rg-${var.app}-${var.environment}-${var.region}"
+
+  # Use the same unique_suffix calculation as main.tf
+  import_unique_suffix = substr(replace(data.azurerm_client_config.current.subscription_id, "-", ""), 0, 4)
+
+  # Storage account names (matching the naming.tf pattern)
+  storage_scaleout_name = lower(substr(replace("st${var.app}${var.environment}scaleout${local.import_unique_suffix}", "-", ""), 0, 24))
+  storage_scalein_name  = lower(substr(replace("st${var.app}${var.environment}scalein${local.import_unique_suffix}", "-", ""), 0, 24))
+
+  # Image definition name (varies by environment)
+  image_def_name = var.environment == "prod" ? "2022-Datacenter-Gen2-Def" : "2022-Datacenter-Def"
+}
+
+# -----------------------------------------------------------------------------
+# Resource Group
+# -----------------------------------------------------------------------------
+
+import {
+  to = azurerm_resource_group.main
+  id = local.rg_id
+}
+
+# -----------------------------------------------------------------------------
+# Managed Identities
+# -----------------------------------------------------------------------------
+
+import {
+  to = module.foundation.azurerm_user_assigned_identity.vmss[0]
+  id = "${local.rg_id}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-vmss-${var.app}-${var.environment}-${var.region}"
+}
+
+import {
+  to = module.foundation.azurerm_user_assigned_identity.shared[0]
+  id = "${local.rg_id}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-shared-${var.app}-${var.environment}-${var.region}"
+}
+
+# -----------------------------------------------------------------------------
+# Networking - Core Resources
+# -----------------------------------------------------------------------------
+
+import {
+  to = module.foundation.azurerm_virtual_network.main
+  id = "${local.rg_id}/providers/Microsoft.Network/virtualNetworks/vnet-${var.app}-${var.environment}-${var.region}"
+}
+
+import {
+  to = module.foundation.azurerm_network_security_group.main
+  id = "${local.rg_id}/providers/Microsoft.Network/networkSecurityGroups/nsg-${var.app}-${var.environment}-${var.region}"
+}
+
+import {
+  to = module.foundation.azurerm_public_ip.outbound
+  id = "${local.rg_id}/providers/Microsoft.Network/publicIPAddresses/pip-${var.app}-${var.environment}-${var.region}"
+}
+
+import {
+  to = module.foundation.azurerm_subnet.runners
+  id = "${local.rg_id}/providers/Microsoft.Network/virtualNetworks/vnet-${var.app}-${var.environment}-${var.region}/subnets/snet-runners-${var.app}-${var.environment}-${var.region}"
+}
+
+import {
+  to = module.foundation.azurerm_lb.main
+  id = "${local.rg_id}/providers/Microsoft.Network/loadBalancers/lb-${var.app}-${var.environment}-${var.region}"
+}
+
+import {
+  to = module.foundation.azurerm_lb_backend_address_pool.main
+  id = "${local.rg_id}/providers/Microsoft.Network/loadBalancers/lb-${var.app}-${var.environment}-${var.region}/backendAddressPools/vmss-backend-pool"
+}
+
+import {
+  to = module.foundation.azurerm_lb_probe.main
+  id = "${local.rg_id}/providers/Microsoft.Network/loadBalancers/lb-${var.app}-${var.environment}-${var.region}/probes/tcp-probe"
+}
+
+import {
+  to = module.foundation.azurerm_lb_outbound_rule.main
+  id = "${local.rg_id}/providers/Microsoft.Network/loadBalancers/lb-${var.app}-${var.environment}-${var.region}/outboundRules/outbound-rule"
+}
+
+import {
+  to = module.foundation.azurerm_subnet_network_security_group_association.runners
+  id = "${local.rg_id}/providers/Microsoft.Network/virtualNetworks/vnet-${var.app}-${var.environment}-${var.region}/subnets/snet-runners-${var.app}-${var.environment}-${var.region}"
+}
+
+# NSG Rules
+import {
+  to = module.foundation.azurerm_network_security_rule.rules["AllowHTTPSOutbound"]
+  id = "${local.rg_id}/providers/Microsoft.Network/networkSecurityGroups/nsg-${var.app}-${var.environment}-${var.region}/securityRules/AllowHTTPSOutbound"
+}
+
+import {
+  to = module.foundation.azurerm_network_security_rule.rules["AllowHTTPOutbound"]
+  id = "${local.rg_id}/providers/Microsoft.Network/networkSecurityGroups/nsg-${var.app}-${var.environment}-${var.region}/securityRules/AllowHTTPOutbound"
+}
+
+import {
+  to = module.foundation.azurerm_network_security_rule.rules["AllowDNSOutbound"]
+  id = "${local.rg_id}/providers/Microsoft.Network/networkSecurityGroups/nsg-${var.app}-${var.environment}-${var.region}/securityRules/AllowDNSOutbound"
+}
+
+# -----------------------------------------------------------------------------
+# Compute Gallery
+# -----------------------------------------------------------------------------
+
+import {
+  to = module.foundation.azurerm_shared_image_gallery.main
+  id = "${local.rg_id}/providers/Microsoft.Compute/galleries/gh_runner_images_${var.environment}"
+}
+
+import {
+  to = module.foundation.azurerm_shared_image.runner
+  id = "${local.rg_id}/providers/Microsoft.Compute/galleries/gh_runner_images_${var.environment}/images/${local.image_def_name}"
+}
+
+# -----------------------------------------------------------------------------
+# Storage Accounts
+# -----------------------------------------------------------------------------
+
+import {
+  to = module.foundation.azurerm_storage_account.scaleout
+  id = "${local.rg_id}/providers/Microsoft.Storage/storageAccounts/${local.storage_scaleout_name}"
+}
+
+import {
+  to = module.foundation.azurerm_storage_account.scalein
+  id = "${local.rg_id}/providers/Microsoft.Storage/storageAccounts/${local.storage_scalein_name}"
+}
+
+# -----------------------------------------------------------------------------
+# Key Vault
+# -----------------------------------------------------------------------------
+
+import {
+  to = module.foundation.azurerm_key_vault.github_secrets
+  id = "${local.rg_id}/providers/Microsoft.KeyVault/vaults/kv-${var.app}-${var.environment}-${var.region}"
+}
+
+# Key Vault Secrets
+# Note: Secrets require the full vault URI with version ID.
+# The version ID is environment-specific and set via import_kv_secret_pat_version variable.
+# If the variable is empty, the import is skipped (Terraform will create a new version).
+import {
+  for_each = var.import_kv_secret_pat_version != "" ? toset(["github-pat"]) : toset([])
+  to       = module.foundation.azurerm_key_vault_secret.github_pat[0]
+  id       = "https://kv-${var.app}-${var.environment}-${var.region}.vault.azure.net/secrets/github-pat/${var.import_kv_secret_pat_version}"
+}
+
+# -----------------------------------------------------------------------------
+# Log Analytics
+# -----------------------------------------------------------------------------
+
+import {
+  to = module.foundation.azurerm_log_analytics_workspace.main
+  id = "${local.rg_id}/providers/Microsoft.OperationalInsights/workspaces/log-${var.app}-${var.environment}-${var.region}"
+}

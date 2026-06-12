@@ -1,0 +1,199 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "gh-vmss-img-runners/Installation/prereqs",
+      "purpose": "Step 2 of the install flow — provision the Terraform state backend (resource group + storage account + tfstate container) and grant Storage Blob Data Contributor to the OIDC service principal created in Step 1."
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[deployment().location]",
+      "metadata": {
+        "description": "Azure region for the state backend resource group and storage account."
+      }
+    },
+    "resourceGroupName": {
+      "type": "string",
+      "defaultValue": "rg-terraform-state",
+      "minLength": 1,
+      "maxLength": 90,
+      "metadata": {
+        "description": "Resource group that will hold the Terraform state storage account. Default matches what backend.tf expects."
+      }
+    },
+    "storageAccountName": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 24,
+      "metadata": {
+        "description": "Globally unique storage account name (3-24 lowercase alphanumeric chars). The portal UI suggests a unique default based on the subscription ID; you can override."
+      }
+    },
+    "containerName": {
+      "type": "string",
+      "defaultValue": "tfstate",
+      "minLength": 3,
+      "maxLength": 63,
+      "metadata": {
+        "description": "Blob container name. Default 'tfstate' matches what backend.tf expects."
+      }
+    },
+    "spObjectId": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "metadata": {
+        "description": "Object ID (NOT Client ID) of the OIDC service principal created in Step 1 by Bootstrap-Entra.ps1. Will receive 'Storage Blob Data Contributor' on the storage account."
+      }
+    }
+  },
+  "variables": {
+    "blobDataContributorRoleId": "ba92f5b4-2d11-453d-a403-e96b0029c9fe"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Resources/resourceGroups",
+      "apiVersion": "2023-07-01",
+      "name": "[parameters('resourceGroupName')]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "purpose": "terraform-state-backend",
+        "managedBy": "gh-vmss-img-runners/Installation/prereqs",
+        "createdAt": "[utcNow('yyyy-MM-dd')]"
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2023-07-01",
+      "name": "[concat('deploy-tfstate-', parameters('storageAccountName'))]",
+      "resourceGroup": "[parameters('resourceGroupName')]",
+      "dependsOn": [
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', parameters('resourceGroupName'))]"
+      ],
+      "properties": {
+        "mode": "Incremental",
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "location": { "type": "string" },
+            "storageAccountName": { "type": "string" },
+            "containerName": { "type": "string" },
+            "spObjectId": { "type": "string" },
+            "blobDataContributorRoleId": { "type": "string" }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Storage/storageAccounts",
+              "apiVersion": "2023-05-01",
+              "name": "[parameters('storageAccountName')]",
+              "location": "[parameters('location')]",
+              "sku": {
+                "name": "Standard_LRS"
+              },
+              "kind": "StorageV2",
+              "properties": {
+                "minimumTlsVersion": "TLS1_2",
+                "supportsHttpsTrafficOnly": true,
+                "allowBlobPublicAccess": false,
+                "allowSharedKeyAccess": false,
+                "defaultToOAuthAuthentication": true,
+                "publicNetworkAccess": "Enabled",
+                "networkAcls": {
+                  "bypass": "AzureServices",
+                  "defaultAction": "Allow"
+                }
+              }
+            },
+            {
+              "type": "Microsoft.Storage/storageAccounts/blobServices",
+              "apiVersion": "2023-05-01",
+              "name": "[concat(parameters('storageAccountName'), '/default')]",
+              "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+              ],
+              "properties": {
+                "isVersioningEnabled": true,
+                "containerDeleteRetentionPolicy": {
+                  "enabled": true,
+                  "days": 30
+                }
+              }
+            },
+            {
+              "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+              "apiVersion": "2023-05-01",
+              "name": "[concat(parameters('storageAccountName'), '/default/', parameters('containerName'))]",
+              "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts/blobServices', parameters('storageAccountName'), 'default')]"
+              ],
+              "properties": {
+                "publicAccess": "None"
+              }
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), parameters('spObjectId'), parameters('blobDataContributorRoleId'))]",
+              "scope": "[concat('Microsoft.Storage/storageAccounts/', parameters('storageAccountName'))]",
+              "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+              ],
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', parameters('blobDataContributorRoleId'))]",
+                "principalId": "[parameters('spObjectId')]",
+                "principalType": "ServicePrincipal",
+                "description": "Allows the OIDC service principal to read/write Terraform state via AAD auth."
+              }
+            }
+          ],
+          "outputs": {
+            "storageAccountId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+            }
+          }
+        },
+        "parameters": {
+          "location": { "value": "[parameters('location')]" },
+          "storageAccountName": { "value": "[parameters('storageAccountName')]" },
+          "containerName": { "value": "[parameters('containerName')]" },
+          "spObjectId": { "value": "[parameters('spObjectId')]" },
+          "blobDataContributorRoleId": { "value": "[variables('blobDataContributorRoleId')]" }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "resourceGroupName": {
+      "type": "string",
+      "value": "[parameters('resourceGroupName')]"
+    },
+    "storageAccountName": {
+      "type": "string",
+      "value": "[parameters('storageAccountName')]"
+    },
+    "containerName": {
+      "type": "string",
+      "value": "[parameters('containerName')]"
+    },
+    "tfBackendConfig": {
+      "type": "object",
+      "value": {
+        "resource_group_name": "[parameters('resourceGroupName')]",
+        "storage_account_name": "[parameters('storageAccountName')]",
+        "container_name": "[parameters('containerName')]",
+        "use_azuread_auth": true
+      },
+      "metadata": {
+        "description": "Drop-in summary for the values backend.tf needs. The storage_account_name also becomes the TFSTATE_STORAGE_ACCOUNT GitHub repo variable (Step 3)."
+      }
+    }
+  }
+}

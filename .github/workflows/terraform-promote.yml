@@ -1,0 +1,226 @@
+# =============================================================================
+# TERRAFORM PROMOTE - Progressive Environment Deployment
+# =============================================================================
+# Deploys infrastructure progressively through environments:
+# dev -> test -> prod
+#
+# Each promotion requires approval before proceeding to the next environment.
+# Uses the reusable Terraform workflow for consistent operations.
+#
+# Triggers:
+# - Manual dispatch only (for controlled promotions)
+# =============================================================================
+
+name: Terraform Promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: 'Target environment to promote to'
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+        default: 'dev'
+
+      image_version:
+        description: 'Image version for VMSS (leave empty for latest from vmss-runner-images)'
+        required: false
+        type: string
+        default: ''
+
+      skip_prior_environments:
+        description: 'Skip prior environments (deploy directly)'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  TERRAFORM_VERSION: '1.9.8'
+  TF_IN_AUTOMATION: 'true'
+  ARM_USE_OIDC: true
+  ARM_USE_AZUREAD: true
+  WORKING_DIRECTORY: 'terraform'
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+# GHA's default Linux bash is `set -e` without `pipefail`. Set it at the workflow
+# level so any piped step (e.g. `terraform plan | tee plan-output.txt`) fails
+# loudly. See .claude/Docs/Tracking/2026-06-01-ci-pipefail-gap-rca-pr22.md.
+defaults:
+  run:
+    shell: bash --noprofile --norc -eo pipefail {0}
+
+jobs:
+  # ===========================================================================
+  # Setup
+  # ===========================================================================
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_dev: ${{ steps.config.outputs.deploy_dev }}
+      deploy_test: ${{ steps.config.outputs.deploy_test }}
+      deploy_prod: ${{ steps.config.outputs.deploy_prod }}
+      image_version: ${{ steps.image.outputs.version }}
+
+    steps:
+      - name: Get latest image version
+        id: image
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          # Use provided version or fetch latest from vmss-runner-images
+          if [ -n "${{ inputs.image_version }}" ]; then
+            echo "version=${{ inputs.image_version }}" >> $GITHUB_OUTPUT
+          else
+            LATEST_VERSION=$(gh release view --repo gitspacecadet/vmss-runner-images --json tagName -q '.tagName' 2>/dev/null || echo "")
+            LATEST_VERSION="${LATEST_VERSION#v}"
+            echo "version=${LATEST_VERSION:-1.0.0}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine deployment path
+        id: config
+        run: |
+          TARGET="${{ inputs.target_environment }}"
+          SKIP="${{ inputs.skip_prior_environments }}"
+
+          if [ "$SKIP" = "true" ]; then
+            # Deploy only to target
+            [ "$TARGET" = "dev" ] && echo "deploy_dev=true" >> $GITHUB_OUTPUT || echo "deploy_dev=false" >> $GITHUB_OUTPUT
+            [ "$TARGET" = "test" ] && echo "deploy_test=true" >> $GITHUB_OUTPUT || echo "deploy_test=false" >> $GITHUB_OUTPUT
+            [ "$TARGET" = "prod" ] && echo "deploy_prod=true" >> $GITHUB_OUTPUT || echo "deploy_prod=false" >> $GITHUB_OUTPUT
+          else
+            # Progressive deployment
+            echo "deploy_dev=true" >> $GITHUB_OUTPUT
+
+            if [ "$TARGET" = "test" ] || [ "$TARGET" = "prod" ]; then
+              echo "deploy_test=true" >> $GITHUB_OUTPUT
+            else
+              echo "deploy_test=false" >> $GITHUB_OUTPUT
+            fi
+
+            if [ "$TARGET" = "prod" ]; then
+              echo "deploy_prod=true" >> $GITHUB_OUTPUT
+            else
+              echo "deploy_prod=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Display deployment plan
+        run: |
+          echo "## Deployment Plan" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | Deploy |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Dev | ${{ steps.config.outputs.deploy_dev }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Test | ${{ steps.config.outputs.deploy_test }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Prod | ${{ steps.config.outputs.deploy_prod }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Version:** \`${{ steps.image.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Deploy to Dev
+  # ===========================================================================
+  deploy-dev:
+    name: Deploy (Dev)
+    needs: setup
+    if: needs.setup.outputs.deploy_dev == 'true'
+    uses: ./.github/workflows/terraform-reusable.yml
+    with:
+      environment: dev
+      action: apply
+      image_version: ${{ needs.setup.outputs.image_version }}
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy to Test (requires dev completion)
+  # ===========================================================================
+  approve-test:
+    name: Approve Test
+    runs-on: ubuntu-latest
+    needs: [setup, deploy-dev]
+    if: needs.setup.outputs.deploy_test == 'true'
+    environment: test-approval
+
+    steps:
+      - name: Test Deployment Approved
+        run: echo "Test deployment has been approved"
+
+  deploy-test:
+    name: Deploy (Test)
+    needs: [setup, approve-test]
+    if: needs.setup.outputs.deploy_test == 'true'
+    uses: ./.github/workflows/terraform-reusable.yml
+    with:
+      environment: test
+      action: apply
+      image_version: ${{ needs.setup.outputs.image_version }}
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy to Prod (requires test completion and explicit approval)
+  # ===========================================================================
+  approve-prod:
+    name: Approve Prod
+    runs-on: ubuntu-latest
+    needs: [setup, deploy-test]
+    if: needs.setup.outputs.deploy_prod == 'true'
+    environment: prod-approval
+
+    steps:
+      - name: Production Deployment Approved
+        run: |
+          echo "::warning::Production deployment has been approved!"
+          echo "## Production Deployment Approved" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Proceeding with production deployment of image version \`${{ needs.setup.outputs.image_version }}\`" >> $GITHUB_STEP_SUMMARY
+
+  deploy-prod:
+    name: Deploy (Prod)
+    needs: [setup, approve-prod]
+    if: needs.setup.outputs.deploy_prod == 'true'
+    uses: ./.github/workflows/terraform-reusable.yml
+    with:
+      environment: prod
+      action: apply
+      image_version: ${{ needs.setup.outputs.image_version }}
+    secrets: inherit
+
+  # ===========================================================================
+  # Summary
+  # ===========================================================================
+  summary:
+    name: Promotion Summary
+    runs-on: ubuntu-latest
+    needs: [setup, deploy-dev, deploy-test, deploy-prod]
+    if: always()
+
+    steps:
+      - name: Generate Summary
+        run: |
+          echo "## Promotion Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------------|--------|" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.setup.outputs.deploy_dev }}" = "true" ]; then
+            echo "| Dev | ${{ needs.deploy-dev.result == 'success' && 'Deployed' || needs.deploy-dev.result == 'skipped' && 'Skipped' || 'Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "${{ needs.setup.outputs.deploy_test }}" = "true" ]; then
+            echo "| Test | ${{ needs.deploy-test.result == 'success' && 'Deployed' || needs.deploy-test.result == 'skipped' && 'Skipped' || 'Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "${{ needs.setup.outputs.deploy_prod }}" = "true" ]; then
+            echo "| Prod | ${{ needs.deploy-prod.result == 'success' && 'Deployed' || needs.deploy-prod.result == 'skipped' && 'Skipped' || 'Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Version:** \`${{ needs.setup.outputs.image_version }}\`" >> $GITHUB_STEP_SUMMARY

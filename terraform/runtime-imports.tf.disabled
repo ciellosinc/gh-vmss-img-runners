@@ -1,0 +1,169 @@
+# -----------------------------------------------------------------------------
+# Terraform Import Blocks - Runtime Resources Only
+# -----------------------------------------------------------------------------
+# Import existing runtime resources into Terraform state.
+# These are the VMSS, Function Apps, Application Insights, App Service Plans,
+# and Role Assignments that were deployed in a previous run.
+#
+# Generated: 2025-12-15
+# Environment: dev
+# Principal ID (shared identity): 50f93b9e-62a8-4fbd-818e-107ba9a17142
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# App Service Plans
+# -----------------------------------------------------------------------------
+
+import {
+  to = module.runtime.azurerm_service_plan.scaleout[0]
+  id = "/subscriptions/198177af-a00c-409d-8ce7-60d9de619f7b/resourceGroups/rg-ghrunners-dev-cus/providers/Microsoft.Web/serverFarms/asp-scaleout-ghrunners-dev-cus"
+}
+
+import {
+  to = module.runtime.azurerm_service_plan.scalein[0]
+  id = "/subscriptions/198177af-a00c-409d-8ce7-60d9de619f7b/resourceGroups/rg-ghrunners-dev-cus/providers/Microsoft.Web/serverFarms/asp-scalein-ghrunners-dev-cus"
+}
+
+# -----------------------------------------------------------------------------
+# Application Insights
+# -----------------------------------------------------------------------------
+
+import {
+  to = module.runtime.azurerm_application_insights.scaleout
+  id = "/subscriptions/198177af-a00c-409d-8ce7-60d9de619f7b/resourceGroups/rg-ghrunners-dev-cus/providers/Microsoft.Insights/components/appi-scaleout-ghrunners-dev-cus"
+}
+
+import {
+  to = module.runtime.azurerm_application_insights.scalein
+  id = "/subscriptions/198177af-a00c-409d-8ce7-60d9de619f7b/resourceGroups/rg-ghrunners-dev-cus/providers/Microsoft.Insights/components/appi-scalein-ghrunners-dev-cus"
+}
+
+# -----------------------------------------------------------------------------
+# Function Apps (created in workflow run #20250204020)
+# -----------------------------------------------------------------------------
+
+import {
+  to = module.runtime.azurerm_windows_function_app.scaleout[0]
+  id = "/subscriptions/198177af-a00c-409d-8ce7-60d9de619f7b/resourceGroups/rg-ghrunners-dev-cus/providers/Microsoft.Web/sites/func-scaleout-ghrunners-dev-cus"
+}
+
+import {
+  to = module.runtime.azurerm_windows_function_app.scalein[0]
+  id = "/subscriptions/198177af-a00c-409d-8ce7-60d9de619f7b/resourceGroups/rg-ghrunners-dev-cus/providers/Microsoft.Web/sites/func-scalein-ghrunners-dev-cus"
+}
+
+# -----------------------------------------------------------------------------
+# Role Assignments - ScaleOut Identity (using shared identity in dev)
+# -----------------------------------------------------------------------------
+
+# ScaleOut: Virtual Machine Contributor on Resource Group
+import {
+  to = module.runtime.azurerm_role_assignment.scaleout_vm_contributor[0]
+  id = "/subscriptions/198177af-a00c-409d-8ce7-60d9de619f7b/resourceGroups/rg-ghrunners-dev-cus/providers/Microsoft.Authorization/roleAssignments/5dfb5bb2-81ab-ec1c-e718-d4e4c5b3cc75"
+}
+
+# ScaleOut: Reader on Resource Group
+import {
+  to = module.runtime.azurerm_role_assignment.scaleout_reader[0]
+  id = "/subscriptions/198177af-a00c-409d-8ce7-60d9de619f7b/resourceGroups/rg-ghrunners-dev-cus/providers/Microsoft.Authorization/roleAssignments/6853835e-f960-cee6-1e87-259aef1e0d3f"
+}
+
+# ScaleOut: Storage Blob Data Contributor on ScaleOut Storage
+import {
+  to = module.runtime.azurerm_role_assignment.scaleout_storage_blob[0]
+  id = "/subscriptions/198177af-a00c-409d-8ce7-60d9de619f7b/resourceGroups/rg-ghrunners-dev-cus/providers/Microsoft.Storage/storageAccounts/stghrunnersdevscaleout19/providers/Microsoft.Authorization/roleAssignments/6823cc30-304b-415d-6331-283ae54454b7"
+}
+
+# ScaleOut: Storage Queue Data Contributor on ScaleOut Storage
+import {
+  to = module.runtime.azurerm_role_assignment.scaleout_storage_queue[0]
+  id = "/subscriptions/198177af-a00c-409d-8ce7-60d9de619f7b/resourceGroups/rg-ghrunners-dev-cus/providers/Microsoft.Storage/storageAccounts/stghrunnersdevscaleout19/providers/Microsoft.Authorization/roleAssignments/a2314bec-04c0-034f-f0df-57673c057151"
+}
+
+# ScaleOut: Storage Table Data Contributor on ScaleOut Storage
+import {
+  to = module.runtime.azurerm_role_assignment.scaleout_storage_table[0]
+  id = "/subscriptions/198177af-a00c-409d-8ce7-60d9de619f7b/resourceGroups/rg-ghrunners-dev-cus/providers/Microsoft.Storage/storageAccounts/stghrunnersdevscaleout19/providers/Microsoft.Authorization/roleAssignments/2556f1bc-c232-caa6-57d0-ac769d26395c"
+}
+
+# ScaleOut: Network Contributor on Resource Group
+import {
+  to = module.runtime.azurerm_role_assignment.scaleout_network_contributor[0]
+  id = "/subscriptions/198177af-a00c-409d-8ce7-60d9de619f7b/resourceGroups/rg-ghrunners-dev-cus/providers/Microsoft.Authorization/roleAssignments/187fd8ec-a7f6-cac1-5ff9-ccd0956d01d8"
+}
+
+# ScaleOut: Contributor on Resource Group (for VMSS scaling)
+import {
+  to = module.runtime.azurerm_role_assignment.scaleout_contributor[0]
+  id = "/subscriptions/198177af-a00c-409d-8ce7-60d9de619f7b/resourceGroups/rg-ghrunners-dev-cus/providers/Microsoft.Authorization/roleAssignments/fb9fdb42-d768-702c-6e51-33a151aa923b"
+}
+
+# ScaleOut: Key Vault Secrets User
+import {
+  to = module.runtime.azurerm_role_assignment.scaleout_keyvault_secrets[0]
+  id = "/subscriptions/198177af-a00c-409d-8ce7-60d9de619f7b/resourceGroups/rg-ghrunners-dev-cus/providers/Microsoft.KeyVault/vaults/kv-ghrunners-dev-cus/providers/Microsoft.Authorization/roleAssignments/cdf8e14a-cd9f-f1d5-cb19-d6a2009da3af"
+}
+
+# -----------------------------------------------------------------------------
+# Role Assignments - ScaleIn Identity (using shared identity in dev)
+# -----------------------------------------------------------------------------
+
+# Note: ScaleIn uses the SAME shared identity as ScaleOut in dev.
+# The following role assignments are unique to ScaleIn:
+
+# -----------------------------------------------------------------------------
+# ScaleIn Storage Role Assignments - REMOVED FOR DEV ENVIRONMENT
+# -----------------------------------------------------------------------------
+# In dev environment, ScaleIn uses the shared identity (same as ScaleOut).
+# These role assignments have count=0 in dev because:
+#   create_scalein_role_assignments = create_scalein_identity && !use_shared_identity
+#
+# Since use_shared_identity = true in dev:
+#   create_scalein_role_assignments = false && !true = false && false = false
+#
+# The shared identity already has necessary permissions via ScaleOut assignments.
+# Storage-scoped permissions are inherited.
+#
+# For test/prod with separate ScaleIn identity, these would need to be imported:
+# - scalein_storage_blob[0]
+# - scalein_storage_queue[0]
+# - scalein_storage_table[0]
+# - scalein_scaleout_table_reader[0]
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# Role Assignments - ScaleIn identity conflict resolution
+# -----------------------------------------------------------------------------
+# IMPORTANT: In dev environment, both ScaleOut and ScaleIn use the SAME shared
+# identity (principal ID: 50f93b9e-62a8-4fbd-818e-107ba9a17142).
+#
+# This means the following role assignments would be DUPLICATES if created:
+# - scalein_vm_contributor → CONFLICTS with scaleout_vm_contributor (same scope + principal)
+# - scalein_reader → CONFLICTS with scaleout_reader (same scope + principal)
+# - scalein_contributor → CONFLICTS with scaleout_contributor (same scope + principal)
+#
+# Azure RBAC does NOT allow duplicate role assignments (same principal + role + scope).
+# The errors "RoleAssignmentExists" occur when Terraform tries to create these.
+#
+# Solution: These scalein assignments should have `count = 0` in dev because the
+# shared identity already has these permissions via scaleout assignments.
+# Only the storage-scoped assignments are unique to scalein (different scope).
+#
+# FIXED: Updated main.tf to set:
+#   create_scalein_role_assignments = create_scalein_identity && !use_shared_identity
+# This prevents duplicate role assignments when using shared identity.
+#
+# Result: In dev, scalein_vm_contributor, scalein_reader, and scalein_contributor
+# have count=0, so we do NOT import them (they don't exist in Terraform state).
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# VMSS Role Assignments (using shared identity in dev)
+# -----------------------------------------------------------------------------
+# The shared identity also has VMSS-specific roles:
+# - vmss_keyvault_secrets_user (already imported in imports.tf from foundation)
+# - vmss_network_contributor (already imported in imports.tf from foundation)
+# - vmss_reader (already imported in imports.tf from foundation)
+# - vmss_storage_blob_scaleout (already imported in imports.tf from foundation)
+# - vmss_storage_table_scaleout (already imported in imports.tf from foundation)
+# -----------------------------------------------------------------------------
